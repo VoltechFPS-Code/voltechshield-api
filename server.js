@@ -9,6 +9,21 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const REQUIRED_ENV_VARS = [
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "ADMIN_DASHBOARD_KEY"
+];
+
+const missingEnvVars = REQUIRED_ENV_VARS.filter((key) => !process.env[key]);
+
+if (missingEnvVars.length > 0) {
+  console.error(
+    `Missing required environment variables: ${missingEnvVars.join(", ")}`
+  );
+  process.exit(1);
+}
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -17,16 +32,29 @@ const supabase = createClient(
 function requireAdmin(req, res, next) {
   const incomingKey = req.headers["x-admin-key"];
 
-  if (!process.env.ADMIN_DASHBOARD_KEY) {
-    return res.status(500).json({ error: "admin_key_not_configured" });
-  }
-
   if (incomingKey !== process.env.ADMIN_DASHBOARD_KEY) {
     return res.status(401).json({ error: "unauthorized" });
   }
 
   next();
 }
+
+app.get("/", (_req, res) => {
+  return res.json({
+    ok: true,
+    service: "voltechshield-api",
+    status: "online"
+  });
+});
+
+app.get("/health", (_req, res) => {
+  return res.json({
+    ok: true,
+    service: "voltechshield-api",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
 
 app.post("/activate", async (req, res) => {
   try {
@@ -169,7 +197,7 @@ app.get("/admin/analytics/summary", requireAdmin, async (_req, res) => {
       recentSuccesses: recentSuccesses || 0
     });
   } catch (err) {
-    console.error(err);
+    console.error("Summary route error:", err);
     return res.status(500).json({ error: "summary_failed" });
   }
 });
@@ -186,7 +214,7 @@ app.get("/admin/activations/recent", requireAdmin, async (_req, res) => {
 
     return res.json(data);
   } catch (err) {
-    console.error(err);
+    console.error("Recent activations route error:", err);
     return res.status(500).json({ error: "recent_activations_failed" });
   }
 });
@@ -210,7 +238,7 @@ app.get("/admin/licenses/search", requireAdmin, async (req, res) => {
 
     return res.json(data);
   } catch (err) {
-    console.error(err);
+    console.error("License search route error:", err);
     return res.status(500).json({ error: "search_failed" });
   }
 });
@@ -235,7 +263,7 @@ app.post("/admin/licenses/reset-hwid", requireAdmin, async (req, res) => {
 
     return res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    console.error("Reset HWID route error:", err);
     return res.status(500).json({ error: "reset_hwid_failed" });
   }
 });
@@ -260,11 +288,13 @@ app.post("/admin/licenses/revoke", requireAdmin, async (req, res) => {
 
     return res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    console.error("Revoke route error:", err);
     return res.status(500).json({ error: "revoke_failed" });
   }
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log(`License server running on port ${process.env.PORT || 3000}`);
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Voltech Shield license server running on port ${PORT}`);
 });
