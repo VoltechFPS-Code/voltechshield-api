@@ -56,6 +56,14 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.get("/version", (_req, res) => {
+  return res.json({
+    version: "0.1.3",
+    notes: "Small UI update test.",
+    url: "https://github.com/VoltechFPS-Code/VoltechShieldUpdates/releases/download/v0.1.3/VoltechShield_0.1.3_x64-setup.exe"
+  });
+});
+
 app.post("/activate", async (req, res) => {
   try {
     const { license, hwid, app_version } = req.body;
