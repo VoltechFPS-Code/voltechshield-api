@@ -2,8 +2,8 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const https = require("https");
 const { createClient } = require("@supabase/supabase-js");
-const { Agent } = require("undici");
 
 const app = express();
 
@@ -31,12 +31,6 @@ const supabase = createClient(
 );
 
 const GEMINI_TIMEOUT_MS = 120000;
-
-const geminiAgent = new Agent({
-  headersTimeout: GEMINI_TIMEOUT_MS,
-  bodyTimeout: GEMINI_TIMEOUT_MS,
-  connectTimeout: 30000
-});
 
 function requireAdmin(req, res, next) {
   const incomingKey = req.headers["x-admin-key"];
@@ -101,7 +95,10 @@ function isDirectNvidiaDownloadUrl(url) {
 
 function constructNvidiaUrl(version, isLaptop) {
   if (!version) return null;
+
   const cleanVersion = version.replace(/[^0-9.]/g, "");
+  if (!cleanVersion) return null;
+
   const type = isLaptop ? "notebook" : "desktop";
 
   return `https://us.download.nvidia.com/Windows/${cleanVersion}/${cleanVersion}-${type}-win10-win11-64bit-international-dch-whql.exe`;
@@ -118,7 +115,9 @@ function normalizeGeminiDriverResult(result, isLaptop) {
   }
 
   const normalizedStatus =
-    result.status === "outdated" || result.status === "up-to-date" || result.status === "unknown"
+    result.status === "outdated" ||
+    result.status === "up-to-date" ||
+    result.status === "unknown"
       ? result.status
       : "unknown";
 
@@ -136,8 +135,11 @@ function normalizeGeminiDriverResult(result, isLaptop) {
 
   let usedFallback = false;
   if (!normalizedUrl && normalizedLatest && normalizedStatus === "outdated") {
-    normalizedUrl = constructNvidiaUrl(normalizedLatest, isLaptop);
-    usedFallback = true;
+    const constructed = constructNvidiaUrl(normalizedLatest, isLaptop);
+    if (constructed && isDirectNvidiaDownloadUrl(constructed)) {
+      normalizedUrl = constructed;
+      usedFallback = true;
+    }
   }
 
   let normalizedNote =
@@ -146,7 +148,8 @@ function normalizeGeminiDriverResult(result, isLaptop) {
       : "";
 
   if (usedFallback) {
-    normalizedNote = "Constructed official NVIDIA direct link based on the latest discovered version.";
+    normalizedNote =
+      "Constructed official NVIDIA direct link based on the latest discovered version.";
   } else if (rawUrl && !normalizedUrl) {
     normalizedNote =
       normalizedNote ||
@@ -167,46 +170,62 @@ function normalizeGeminiDriverResult(result, isLaptop) {
   };
 }
 
-async function postGemini(body) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+function postGeminiHttps(body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
 
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    const req = https.request(
       {
+        hostname: "generativelanguage.googleapis.com",
+        path: `/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-        dispatcher: geminiAgent
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload)
+        }
+      },
+      (res) => {
+        let raw = "";
+
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+
+        res.on("end", () => {
+          const statusCode = res.statusCode || 500;
+
+          if (statusCode < 200 || statusCode >= 300) {
+            return reject(new Error(`Gemini HTTP ${statusCode} // ${raw}`));
+          }
+
+          try {
+            const parsed = JSON.parse(raw);
+            resolve(parsed);
+          } catch (err) {
+            reject(new Error(`Gemini JSON parse failed // ${String(err)} // ${raw}`));
+          }
+        });
       }
     );
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Gemini HTTP ${response.status} // ${text}`);
-    }
+    req.setTimeout(GEMINI_TIMEOUT_MS, () => {
+      req.destroy(new Error("Gemini request timed out"));
+    });
 
-    return await response.json();
-  } catch (err) {
-    if (
-      err?.name === "AbortError" ||
-      err?.code === "UND_ERR_HEADERS_TIMEOUT" ||
-      err?.cause?.code === "UND_ERR_HEADERS_TIMEOUT"
-    ) {
-      throw new Error("Gemini headers timeout");
-    }
+    req.on("error", (err) => {
+      reject(err);
+    });
 
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
+    req.write(payload);
+    req.end();
+  });
 }
 
-async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop }) {
+async function lookupDriverWithGemini({
+  gpu_name,
+  gpu_driver_version,
+  gpu_is_laptop
+}) {
   if (!process.env.GEMINI_API_KEY) {
     return null;
   }
@@ -219,7 +238,7 @@ Installed Driver Version: ${gpu_driver_version}
 
 Task:
 1. Use Google Search to find the absolute latest NVIDIA Game Ready Driver (WHQL) version for this exact GPU family and platform.
-2. Specifically look for results on "nvidia.com" or trusted hardware news sites regarding the latest version.
+2. Specifically look for results on nvidia.com or trusted hardware news sites regarding the latest version.
 3. Compare the found version with the installed version (${gpu_driver_version}).
 4. If the installed driver is already current, set status to "up-to-date".
 5. If a newer driver exists, set status to "outdated".
@@ -237,7 +256,7 @@ JSON format:
 }
 `.trim();
 
-  const data = await postGemini({
+  const data = await postGeminiHttps({
     contents: [
       {
         role: "user",
@@ -525,9 +544,7 @@ app.post("/report-gpu", async (req, res) => {
       refreshedLicense.suggested_driver_latest ||
       null;
 
-    const preferredNote =
-      refreshedLicense.driver_note ||
-      null;
+    const preferredNote = refreshedLicense.driver_note || null;
 
     const driverUpdateAvailable =
       Boolean(preferredUrl) &&
