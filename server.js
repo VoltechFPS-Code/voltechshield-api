@@ -90,7 +90,16 @@ function isDirectNvidiaDownloadUrl(url) {
   }
 }
 
-function normalizeGeminiDriverResult(result) {
+// NEW HELPER: Constructs the standard NVIDIA DCH WHQL link if we know the version
+function constructNvidiaUrl(version, isLaptop) {
+  if (!version) return null;
+  const cleanVersion = version.replace(/[^0-9.]/g, '');
+  const type = isLaptop ? "notebook" : "desktop";
+  // Modern DCH standard pattern
+  return `https://us.download.nvidia.com/Windows/${cleanVersion}/${cleanVersion}-${type}-win10-win11-64bit-international-dch-whql.exe`;
+}
+
+function normalizeGeminiDriverResult(result, isLaptop) {
   if (!result || typeof result !== "object") {
     return {
       status: "unknown",
@@ -115,14 +124,23 @@ function normalizeGeminiDriverResult(result) {
       ? result.download_url.trim()
       : null;
 
-  const normalizedUrl = isDirectNvidiaDownloadUrl(rawUrl) ? rawUrl : null;
+  let normalizedUrl = isDirectNvidiaDownloadUrl(rawUrl) ? rawUrl : null;
+  
+  // FALLBACK: If Gemini gave us a version but no valid direct link, construct it manually
+  let usedFallback = false;
+  if (!normalizedUrl && normalizedLatest && normalizedStatus === "outdated") {
+    normalizedUrl = constructNvidiaUrl(normalizedLatest, isLaptop);
+    usedFallback = true;
+  }
 
   let normalizedNote =
     typeof result.note === "string" && result.note.trim().length > 0
       ? result.note.trim()
       : "";
 
-  if (rawUrl && !normalizedUrl) {
+  if (usedFallback) {
+    normalizedNote = "Constructed official NVIDIA direct link based on the latest discovered version.";
+  } else if (rawUrl && !normalizedUrl) {
     normalizedNote =
       normalizedNote ||
       "Gemini returned a non-direct NVIDIA page, so the link was rejected.";
@@ -147,34 +165,29 @@ async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_lap
     return null;
   }
 
+  // UPDATED PROMPT: More specific instructions and format hints
   const prompt = `
-You are checking NVIDIA driver availability.
-
-Use Google Search and return only valid JSON.
-
-GPU Name: ${gpu_name}
+You are a specialized hardware assistant for VoltechShield.
+Current Date: ${new Date().toDateString()}
+Target GPU: ${gpu_name} (${gpu_is_laptop ? "Laptop / Notebook" : "Desktop"})
 Installed Driver Version: ${gpu_driver_version}
-Platform: ${gpu_is_laptop ? "Laptop / Notebook" : "Desktop"}
 
-Rules:
-1. Search only for the correct NVIDIA driver for this exact GPU family and platform.
-2. Prefer WHQL drivers from NVIDIA.
-3. If the installed driver is already current, set status to "up-to-date".
-4. If a newer driver exists, set status to "outdated".
-5. If uncertain, set status to "unknown".
-6. ONLY return a direct downloadable NVIDIA installer URL that points to a .exe file on a download host such as international.download.nvidia.com.
-7. DO NOT return generic NVIDIA pages like:
-   - https://www.nvidia.com/Download/index.aspx
-   - driver search pages
-   - landing pages
-8. If you cannot find a direct .exe installer URL with confidence, set download_url to an empty string.
-9. Return only valid JSON.
+Task:
+1. Use Google Search to find the absolute latest NVIDIA Game Ready Driver (WHQL) version for this exact GPU family and platform.
+2. Specifically look for results on "nvidia.com" or hardware news sites regarding the latest version.
+3. Compare the found version with the installed version (${gpu_driver_version}).
+4. If the installed driver is already current, set status to "up-to-date".
+5. If a newer driver exists, set status to "outdated".
+6. Provide the direct download URL if you can find it. NVIDIA direct links usually follow this pattern:
+   https://us.download.nvidia.com/Windows/[version]/[version]-${gpu_is_laptop ? "notebook" : "desktop"}-win10-win11-64bit-international-dch-whql.exe
+
+Return ONLY valid JSON.
 
 JSON format:
 {
   "status": "outdated" or "up-to-date" or "unknown",
   "latest": "xxx.xx",
-  "download_url": "https://...",
+  "download_url": "https://us.download.nvidia.com/...",
   "note": "short explanation"
 }
 `.trim();
@@ -217,7 +230,8 @@ JSON format:
       .join("") || "";
 
   const parsed = jsonFromGeminiText(text);
-  const normalized = normalizeGeminiDriverResult(parsed);
+  // Pass the laptop boolean to the normalizer for the fallback builder
+  const normalized = normalizeGeminiDriverResult(parsed, gpu_is_laptop);
 
   console.log("Gemini raw text:", text);
   console.log("Gemini normalized result:", normalized);
@@ -632,6 +646,4 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
-}); 
-::contentReference[oaicite:1]{index=1}
-
+});
