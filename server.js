@@ -63,6 +63,85 @@ function jsonFromGeminiText(text) {
   }
 }
 
+function isDirectNvidiaDownloadUrl(url) {
+  if (!url || typeof url !== "string") return false;
+
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+
+    const allowedHosts = [
+      "international.download.nvidia.com",
+      "us.download.nvidia.com",
+      "download.nvidia.com"
+    ];
+
+    const hostAllowed = allowedHosts.some((host) => hostname === host);
+    const isExe = pathname.endsWith(".exe");
+    const isGenericDriverPage =
+      pathname.includes("/download/index.aspx") ||
+      pathname.includes("/drivers") ||
+      pathname.includes("/download/driverresults.aspx");
+
+    return hostAllowed && isExe && !isGenericDriverPage;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeGeminiDriverResult(result) {
+  if (!result || typeof result !== "object") {
+    return {
+      status: "unknown",
+      latest: null,
+      download_url: null,
+      note: "Gemini returned no structured result."
+    };
+  }
+
+  const normalizedStatus =
+    result.status === "outdated" || result.status === "up-to-date" || result.status === "unknown"
+      ? result.status
+      : "unknown";
+
+  const normalizedLatest =
+    typeof result.latest === "string" && result.latest.trim().length > 0
+      ? result.latest.trim()
+      : null;
+
+  const rawUrl =
+    typeof result.download_url === "string" && result.download_url.trim().length > 0
+      ? result.download_url.trim()
+      : null;
+
+  const normalizedUrl = isDirectNvidiaDownloadUrl(rawUrl) ? rawUrl : null;
+
+  let normalizedNote =
+    typeof result.note === "string" && result.note.trim().length > 0
+      ? result.note.trim()
+      : "";
+
+  if (rawUrl && !normalizedUrl) {
+    normalizedNote =
+      normalizedNote ||
+      "Gemini returned a non-direct NVIDIA page, so the link was rejected.";
+  }
+
+  if (normalizedStatus === "outdated" && !normalizedUrl) {
+    normalizedNote =
+      normalizedNote ||
+      "A newer driver may exist, but no direct NVIDIA installer URL was verified.";
+  }
+
+  return {
+    status: normalizedStatus,
+    latest: normalizedLatest,
+    download_url: normalizedUrl,
+    note: normalizedNote || null
+  };
+}
+
 async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop }) {
   if (!process.env.GEMINI_API_KEY) {
     return null;
@@ -71,7 +150,7 @@ async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_lap
   const prompt = `
 You are checking NVIDIA driver availability.
 
-Use Google Search and return only JSON.
+Use Google Search and return only valid JSON.
 
 GPU Name: ${gpu_name}
 Installed Driver Version: ${gpu_driver_version}
@@ -79,10 +158,17 @@ Platform: ${gpu_is_laptop ? "Laptop / Notebook" : "Desktop"}
 
 Rules:
 1. Search only for the correct NVIDIA driver for this exact GPU family and platform.
-2. Prefer WHQL drivers from nvidia.com.
-3. If the installed driver is already current, mark it up-to-date.
-4. If uncertain, set status to "unknown" and leave download_url empty.
-5. Return only valid JSON.
+2. Prefer WHQL drivers from NVIDIA.
+3. If the installed driver is already current, set status to "up-to-date".
+4. If a newer driver exists, set status to "outdated".
+5. If uncertain, set status to "unknown".
+6. ONLY return a direct downloadable NVIDIA installer URL that points to a .exe file on a download host such as international.download.nvidia.com.
+7. DO NOT return generic NVIDIA pages like:
+   - https://www.nvidia.com/Download/index.aspx
+   - driver search pages
+   - landing pages
+8. If you cannot find a direct .exe installer URL with confidence, set download_url to an empty string.
+9. Return only valid JSON.
 
 JSON format:
 {
@@ -107,10 +193,13 @@ JSON format:
             parts: [{ text: prompt }]
           }
         ],
-        tools: [{ googleSearch: {} }],
+        tools: [{ google_search: {} }],
         generationConfig: {
           responseMimeType: "application/json",
-          temperature: 0.1
+          temperature: 0.1,
+          thinkingConfig: {
+            thinkingLevel: "low"
+          }
         }
       })
     }
@@ -127,7 +216,13 @@ JSON format:
       ?.map((part) => part.text || "")
       .join("") || "";
 
-  return jsonFromGeminiText(text);
+  const parsed = jsonFromGeminiText(text);
+  const normalized = normalizeGeminiDriverResult(parsed);
+
+  console.log("Gemini raw text:", text);
+  console.log("Gemini normalized result:", normalized);
+
+  return normalized;
 }
 
 app.get("/", (_req, res) => {
@@ -336,7 +431,6 @@ app.post("/report-gpu", async (req, res) => {
           gpu_driver_version,
           gpu_is_laptop: Boolean(gpu_is_laptop)
         });
-        console.log("Gemini suggested result:", suggested);
       }
     } catch (geminiError) {
       console.error("Gemini lookup error:", geminiError);
@@ -538,4 +632,7 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
-});
+}); we have a better starting point. how can we make it do its actual intended function? ანუ even if it maybe isnt the best most accurate: it gathers hardware data --> sendt to server --> server asks gemini search tool to see if correct drivers exist and where they are, and return that? 
+what if i provide gemini a few urls like this https://www.nvidia.com/en-eu/drivers/results/248966/ and maybe the one for the existing one or smthn, and ask it to use web search? think. think.
+
+::contentReference[oaicite:1]{index=1}
