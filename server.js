@@ -30,7 +30,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const GEMINI_TIMEOUT_MS = 120000;
+const GEMINI_TIMEOUT_MS = 25000;
+const DRIVER_SUGGESTION_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 function requireAdmin(req, res, next) {
   const incomingKey = req.headers["x-admin-key"];
@@ -170,6 +171,69 @@ function normalizeGeminiDriverResult(result, isLaptop) {
   };
 }
 
+function getPreferredDriverFields(licenseRow) {
+  const preferredUrl =
+    licenseRow.approved_driver_download_url ||
+    licenseRow.suggested_driver_download_url ||
+    null;
+
+  const preferredLatest =
+    licenseRow.approved_driver_latest ||
+    licenseRow.suggested_driver_latest ||
+    null;
+
+  const preferredNote =
+    licenseRow.driver_note ||
+    null;
+
+  const preferredStatus =
+    licenseRow.approved_driver_download_url
+      ? "outdated"
+      : licenseRow.suggested_driver_status || "unknown";
+
+  const driverUpdateAvailable =
+    Boolean(preferredUrl) &&
+    (
+      Boolean(licenseRow.approved_driver_download_url) ||
+      licenseRow.suggested_driver_status === "outdated"
+    );
+
+  return {
+    driver_update_available: driverUpdateAvailable,
+    driver_download_url: preferredUrl,
+    driver_note: preferredNote,
+    driver_latest_version: preferredLatest,
+    driver_status: preferredStatus
+  };
+}
+
+function shouldRefreshDriverSuggestion(licenseRow, gpu_name, gpu_driver_version) {
+  if (!gpu_name || !gpu_driver_version) return false;
+  if (!gpu_name.toLowerCase().includes("nvidia")) return false;
+
+  if (licenseRow.approved_driver_download_url) {
+    return false;
+  }
+
+  const checkedAt = licenseRow.suggested_driver_checked_at
+    ? new Date(licenseRow.suggested_driver_checked_at).getTime()
+    : 0;
+
+  const now = Date.now();
+  const recentlyChecked =
+    checkedAt && now - checkedAt < DRIVER_SUGGESTION_COOLDOWN_MS;
+
+  const sameGpu =
+    (licenseRow.gpu_name || "") === gpu_name &&
+    (licenseRow.gpu_driver_version || "") === gpu_driver_version;
+
+  if (recentlyChecked && sameGpu) {
+    return false;
+  }
+
+  return true;
+}
+
 function postGeminiHttps(body) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
@@ -285,6 +349,62 @@ JSON format:
   console.log("Gemini normalized result:", normalized);
 
   return normalized;
+}
+
+async function refreshDriverSuggestionInBackground({
+  licenseRow,
+  license,
+  gpu_name,
+  gpu_driver_version,
+  gpu_is_laptop
+}) {
+  try {
+    const suggested = await lookupDriverWithGemini({
+      gpu_name,
+      gpu_driver_version,
+      gpu_is_laptop: Boolean(gpu_is_laptop)
+    });
+
+    if (!suggested) {
+      await supabase
+        .from("licenses")
+        .update({
+          suggested_driver_checked_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq("license_key", license);
+
+      return;
+    }
+
+    const suggestedPayload = {
+      suggested_driver_status: suggested.status || null,
+      suggested_driver_latest: suggested.latest || null,
+      suggested_driver_download_url: suggested.download_url || null,
+      suggested_driver_checked_at: new Date().toISOString(),
+      driver_note: licenseRow.driver_note || suggested.note || null,
+      updated_at: new Date().toISOString()
+    };
+
+    const { error } = await supabase
+      .from("licenses")
+      .update(suggestedPayload)
+      .eq("license_key", license);
+
+    if (error) {
+      console.error("Background suggested driver update error:", error);
+    }
+  } catch (err) {
+    console.error("Background Gemini lookup error:", err);
+
+    await supabase
+      .from("licenses")
+      .update({
+        suggested_driver_checked_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq("license_key", license);
+  }
 }
 
 app.get("/", (_req, res) => {
@@ -484,84 +604,30 @@ app.post("/report-gpu", async (req, res) => {
       console.error("GPU update columns error:", gpuUpdateError);
     }
 
-    let suggested = null;
-
-    try {
-      if (gpu_name.toLowerCase().includes("nvidia")) {
-        suggested = await lookupDriverWithGemini({
-          gpu_name,
-          gpu_driver_version,
-          gpu_is_laptop: Boolean(gpu_is_laptop)
-        });
-      }
-    } catch (geminiError) {
-      console.error("Gemini lookup error:", geminiError);
-
-      suggested = {
-        status: "unknown",
-        latest: null,
-        download_url: null,
-        note: "Gemini lookup timed out or failed."
-      };
-    }
-
-    if (suggested) {
-      const suggestedPayload = {
-        suggested_driver_status: suggested.status || null,
-        suggested_driver_latest: suggested.latest || null,
-        suggested_driver_download_url: suggested.download_url || null,
-        suggested_driver_checked_at: new Date().toISOString(),
-        driver_note: licenseRow.driver_note || suggested.note || null,
-        updated_at: new Date().toISOString()
-      };
-
-      const { error: suggestedUpdateError } = await supabase
-        .from("licenses")
-        .update(suggestedPayload)
-        .eq("license_key", license);
-
-      if (suggestedUpdateError) {
-        console.error("Suggested driver columns error:", suggestedUpdateError);
-      }
-    }
-
-    const refreshedLicense = {
+    const mergedLicense = {
       ...licenseRow,
-      suggested_driver_status: suggested?.status || licenseRow.suggested_driver_status || null,
-      suggested_driver_latest: suggested?.latest || licenseRow.suggested_driver_latest || null,
-      suggested_driver_download_url:
-        suggested?.download_url || licenseRow.suggested_driver_download_url || null,
-      driver_note: licenseRow.driver_note || suggested?.note || null
+      ...updatePayload
     };
 
-    const preferredUrl =
-      refreshedLicense.approved_driver_download_url ||
-      refreshedLicense.suggested_driver_download_url ||
-      null;
+    const responsePayload = getPreferredDriverFields(mergedLicense);
 
-    const preferredLatest =
-      refreshedLicense.approved_driver_latest ||
-      refreshedLicense.suggested_driver_latest ||
-      null;
-
-    const preferredNote = refreshedLicense.driver_note || null;
-
-    const driverUpdateAvailable =
-      Boolean(preferredUrl) &&
-      (
-        Boolean(refreshedLicense.approved_driver_download_url) ||
-        refreshedLicense.suggested_driver_status === "outdated"
-      );
+    if (shouldRefreshDriverSuggestion(licenseRow, gpu_name, gpu_driver_version)) {
+      refreshDriverSuggestionInBackground({
+        licenseRow,
+        license,
+        gpu_name,
+        gpu_driver_version,
+        gpu_is_laptop: Boolean(gpu_is_laptop)
+      }).catch((err) => {
+        console.error("Detached background refresh error:", err);
+      });
+    }
 
     return res.json({
       ok: true,
       gpu_name,
       gpu_driver_version,
-      driver_update_available: driverUpdateAvailable,
-      driver_download_url: preferredUrl,
-      driver_note: preferredNote,
-      driver_latest_version: preferredLatest,
-      driver_status: refreshedLicense.suggested_driver_status || "unknown"
+      ...responsePayload
     });
   } catch (err) {
     console.error("Report GPU route error:", err);
