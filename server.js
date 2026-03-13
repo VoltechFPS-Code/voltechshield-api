@@ -38,8 +38,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const GEMINI_TIMEOUT_MS = 25000;
 const DRIVER_SUGGESTION_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+const geminiAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 10
+});
 
 function requireAdmin(req, res, next) {
   const incomingKey = req.headers["x-admin-key"];
@@ -253,12 +257,14 @@ function postGeminiHttps(body) {
 
     const req = https.request(
       {
+        agent: geminiAgent,
         hostname: "generativelanguage.googleapis.com",
         path: `/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload)
+          "Content-Length": Buffer.byteLength(payload),
+          Connection: "keep-alive"
         }
       },
       (res) => {
@@ -285,8 +291,15 @@ function postGeminiHttps(body) {
       }
     );
 
-    req.setTimeout(GEMINI_TIMEOUT_MS, () => {
-      req.destroy(new Error("Gemini request timed out"));
+    req.on("socket", (socket) => {
+      socket.setTimeout(0);
+      socket.setKeepAlive(true, 1000);
+    });
+
+    req.setTimeout(0);
+
+    req.on("timeout", () => {
+      console.error("Gemini request emitted timeout event");
     });
 
     req.on("error", (err) => {
@@ -780,7 +793,10 @@ app.post("/admin/licenses/revoke", requireAdmin, async (req, res) => {
 });
 
 const PORT = Number(process.env.PORT) || 3000;
-
-app.listen(PORT, "0.0.0.0", () => {
+const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
 });
+
+server.requestTimeout = 0;
+server.headersTimeout = 0;
+server.keepAliveTimeout = 65000;
