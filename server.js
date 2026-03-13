@@ -2,21 +2,12 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
-const https = require("https");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
-
-process.on("unhandledRejection", (err) => {
-  console.error("Unhandled rejection:", err);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("Uncaught exception:", err);
-});
 
 const REQUIRED_ENV_VARS = [
   "SUPABASE_URL",
@@ -37,16 +28,6 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-const DRIVER_SUGGESTION_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-const UNKNOWN_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
-
-const geminiAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 10
-});
-
-const driverRefreshLocks = new Set();
 
 function requireAdmin(req, res, next) {
   const incomingKey = req.headers["x-admin-key"];
@@ -82,411 +63,71 @@ function jsonFromGeminiText(text) {
   }
 }
 
-function parseVersionParts(version) {
-  if (!version || typeof version !== "string") return [];
-
-  return version
-    .trim()
-    .split(".")
-    .map((part) => Number(part))
-    .filter((part) => Number.isFinite(part));
-}
-
-function compareVersionStrings(a, b) {
-  const aParts = parseVersionParts(a);
-  const bParts = parseVersionParts(b);
-  const len = Math.max(aParts.length, bParts.length);
-
-  for (let i = 0; i < len; i += 1) {
-    const av = aParts[i] ?? 0;
-    const bv = bParts[i] ?? 0;
-
-    if (av > bv) return 1;
-    if (av < bv) return -1;
-  }
-
-  return 0;
-}
-
-function isDirectNvidiaDownloadUrl(url) {
-  if (!url || typeof url !== "string") return false;
-
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname.toLowerCase();
-    const pathname = parsed.pathname.toLowerCase();
-
-    const allowedHosts = [
-      "international.download.nvidia.com",
-      "us.download.nvidia.com",
-      "download.nvidia.com"
-    ];
-
-    const hostAllowed = allowedHosts.some((host) => hostname === host);
-    const isExe = pathname.endsWith(".exe");
-    const isGenericDriverPage =
-      pathname.includes("/download/index.aspx") ||
-      pathname.includes("/drivers") ||
-      pathname.includes("/download/driverresults.aspx");
-
-    return hostAllowed && isExe && !isGenericDriverPage;
-  } catch {
-    return false;
-  }
-}
-
-function constructNvidiaUrl(version, isLaptop) {
-  if (!version) return null;
-
-  const cleanVersion = version.replace(/[^0-9.]/g, "");
-  if (!cleanVersion) return null;
-
-  const type = isLaptop ? "notebook" : "desktop";
-
-  return `https://us.download.nvidia.com/Windows/${cleanVersion}/${cleanVersion}-${type}-win10-win11-64bit-international-dch-whql.exe`;
-}
-
-function normalizeGeminiDriverResult(result, isLaptop, installedVersion) {
-  if (!result || typeof result !== "object") {
-    return {
-      status: "unknown",
-      latest: null,
-      download_url: null,
-      note: "Gemini returned no structured result."
-    };
-  }
-
-  let normalizedStatus =
-    result.status === "outdated" ||
-    result.status === "up-to-date" ||
-    result.status === "unknown"
-      ? result.status
-      : "unknown";
-
-  const normalizedLatest =
-    typeof result.latest === "string" && result.latest.trim().length > 0
-      ? result.latest.trim()
-      : null;
-
-  const rawUrl =
-    typeof result.download_url === "string" && result.download_url.trim().length > 0
-      ? result.download_url.trim()
-      : null;
-
-  if (normalizedLatest && installedVersion) {
-    const cmp = compareVersionStrings(normalizedLatest, installedVersion);
-
-    if (cmp > 0) {
-      normalizedStatus = "outdated";
-    } else if (cmp === 0) {
-      normalizedStatus = "up-to-date";
-    }
-  }
-
-  let normalizedUrl = isDirectNvidiaDownloadUrl(rawUrl) ? rawUrl : null;
-
-  let usedFallback = false;
-  if (!normalizedUrl && normalizedLatest && normalizedStatus === "outdated") {
-    const constructed = constructNvidiaUrl(normalizedLatest, isLaptop);
-    if (constructed && isDirectNvidiaDownloadUrl(constructed)) {
-      normalizedUrl = constructed;
-      usedFallback = true;
-    }
-  }
-
-  let normalizedNote =
-    typeof result.note === "string" && result.note.trim().length > 0
-      ? result.note.trim()
-      : "";
-
-  if (usedFallback) {
-    normalizedNote =
-      "Constructed official NVIDIA direct link based on the latest discovered version.";
-  } else if (rawUrl && !normalizedUrl) {
-    normalizedNote =
-      normalizedNote ||
-      "Gemini returned a non-direct NVIDIA page, so the link was rejected.";
-  }
-
-  if (normalizedStatus === "outdated" && !normalizedUrl) {
-    normalizedNote =
-      normalizedNote ||
-      "A newer driver appears to exist, but no direct NVIDIA installer URL was verified.";
-  }
-
-  return {
-    status: normalizedStatus,
-    latest: normalizedLatest,
-    download_url: normalizedUrl,
-    note: normalizedNote || null
-  };
-}
-
-function getPreferredDriverFields(licenseRow) {
-  const hasApprovedLink = Boolean(licenseRow.approved_driver_download_url);
-  const suggestedStatus =
-    licenseRow.suggested_driver_status === "outdated" ||
-    licenseRow.suggested_driver_status === "up-to-date" ||
-    licenseRow.suggested_driver_status === "unknown"
-      ? licenseRow.suggested_driver_status
-      : "unknown";
-
-  const preferredStatus = hasApprovedLink
-    ? "outdated"
-    : suggestedStatus;
-
-  const preferredUrl =
-    licenseRow.approved_driver_download_url ||
-    (preferredStatus === "outdated" ? licenseRow.suggested_driver_download_url || null : null);
-
-  const preferredLatest =
-    licenseRow.approved_driver_latest ||
-    licenseRow.suggested_driver_latest ||
-    null;
-
-  const preferredNote =
-    licenseRow.driver_note ||
-    null;
-
-  const driverUpdateAvailable =
-    preferredStatus === "outdated" && Boolean(preferredUrl);
-
-  return {
-    driver_update_available: driverUpdateAvailable,
-    driver_download_url: preferredUrl || null,
-    driver_note: preferredNote,
-    driver_latest_version: preferredLatest,
-    driver_status: preferredStatus
-  };
-}
-
-function shouldRefreshDriverSuggestion(licenseRow, gpu_name, gpu_driver_version, license) {
-  if (!process.env.GEMINI_API_KEY) return false;
-  if (!gpu_name || !gpu_driver_version) return false;
-  if (!gpu_name.toLowerCase().includes("nvidia")) return false;
-  if (!license) return false;
-
-  if (licenseRow.approved_driver_download_url) {
-    return false;
-  }
-
-  if (driverRefreshLocks.has(license)) {
-    return false;
-  }
-
-  const checkedAt = licenseRow.suggested_driver_checked_at
-    ? new Date(licenseRow.suggested_driver_checked_at).getTime()
-    : 0;
-
-  const now = Date.now();
-
-  const sameGpu =
-    (licenseRow.gpu_name || "") === gpu_name &&
-    (licenseRow.gpu_driver_version || "") === gpu_driver_version;
-
-  if (!sameGpu) {
-    return true;
-  }
-
-  const suggestedStatus =
-    licenseRow.suggested_driver_status === "outdated" ||
-    licenseRow.suggested_driver_status === "up-to-date" ||
-    licenseRow.suggested_driver_status === "unknown"
-      ? licenseRow.suggested_driver_status
-      : "unknown";
-
-  if (!checkedAt) {
-    return true;
-  }
-
-  if (suggestedStatus === "unknown") {
-    return now - checkedAt >= UNKNOWN_RETRY_COOLDOWN_MS;
-  }
-
-  return now - checkedAt >= DRIVER_SUGGESTION_COOLDOWN_MS;
-}
-
-function postGeminiHttps(body) {
-  return new Promise((resolve, reject) => {
-    if (!process.env.GEMINI_API_KEY) {
-      return resolve(null);
-    }
-
-    const payload = JSON.stringify(body);
-
-    const req = https.request(
-      {
-        agent: geminiAgent,
-        hostname: "generativelanguage.googleapis.com",
-        path: `/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-          Connection: "keep-alive"
-        }
-      },
-      (res) => {
-        let raw = "";
-
-        res.on("data", (chunk) => {
-          raw += chunk;
-        });
-
-        res.on("end", () => {
-          const statusCode = res.statusCode || 500;
-
-          if (statusCode < 200 || statusCode >= 300) {
-            return reject(new Error(`Gemini HTTP ${statusCode} // ${raw}`));
-          }
-
-          try {
-            const parsed = JSON.parse(raw);
-            resolve(parsed);
-          } catch (err) {
-            reject(new Error(`Gemini JSON parse failed // ${String(err)} // ${raw}`));
-          }
-        });
-      }
-    );
-
-    req.on("socket", (socket) => {
-      socket.setTimeout(0);
-      socket.setKeepAlive(true, 1000);
-    });
-
-    req.setTimeout(0);
-
-    req.on("timeout", () => {
-      console.error("Gemini request emitted timeout event");
-    });
-
-    req.on("error", (err) => {
-      reject(err);
-    });
-
-    req.write(payload);
-    req.end();
-  });
-}
-
-async function lookupDriverWithGemini({
-  gpu_name,
-  gpu_driver_version,
-  gpu_is_laptop
-}) {
+async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop }) {
   if (!process.env.GEMINI_API_KEY) {
     return null;
   }
 
   const prompt = `
-You are a specialized hardware assistant for VoltechShield.
-Current Date: ${new Date().toDateString()}
-Target GPU: ${gpu_name} (${gpu_is_laptop ? "Laptop / Notebook" : "Desktop"})
+You are checking NVIDIA driver availability.
+
+Use Google Search and return only JSON.
+
+GPU Name: ${gpu_name}
 Installed Driver Version: ${gpu_driver_version}
+Platform: ${gpu_is_laptop ? "Laptop / Notebook" : "Desktop"}
 
-Task:
-1. Use Google Search to find the latest NVIDIA Game Ready Driver WHQL version relevant for this platform.
-2. Compare that version with the installed version.
-3. Return status "outdated" only if the discovered latest version is newer than the installed version.
-4. Return status "up-to-date" only if the installed version matches the latest version.
-5. If you are not sure, return status "unknown".
-6. Provide a direct NVIDIA .exe URL only if you are confident it is a direct installer URL. Never return a generic NVIDIA landing page.
-
-Return ONLY valid JSON.
+Rules:
+1. Search only for the correct NVIDIA driver for this exact GPU family and platform.
+2. Prefer WHQL drivers from nvidia.com.
+3. If the installed driver is already current, mark it up-to-date.
+4. If uncertain, set status to "unknown" and leave download_url empty.
+5. Return only valid JSON.
 
 JSON format:
 {
   "status": "outdated" or "up-to-date" or "unknown",
   "latest": "xxx.xx",
-  "download_url": "https://us.download.nvidia.com/...",
+  "download_url": "https://...",
   "note": "short explanation"
 }
 `.trim();
 
-  const data = await postGeminiHttps({
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: prompt }]
-      }
-    ],
-    tools: [{ googleSearch: {} }],
-    generationConfig: {
-      responseMimeType: "application/json",
-      temperature: 0.1
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: prompt }]
+          }
+        ],
+        tools: [{ googleSearch: {} }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0.1
+        }
+      })
     }
-  });
+  );
 
-  if (!data) {
-    return null;
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Gemini HTTP ${response.status} // ${text}`);
   }
 
+  const data = await response.json();
   const text =
     data?.candidates?.[0]?.content?.parts
       ?.map((part) => part.text || "")
       .join("") || "";
 
-  const parsed = jsonFromGeminiText(text);
-  const normalized = normalizeGeminiDriverResult(
-    parsed,
-    gpu_is_laptop,
-    gpu_driver_version
-  );
-
-  console.log("Gemini raw text:", text);
-  console.log("Gemini normalized result:", normalized);
-
-  return normalized;
-}
-
-async function refreshDriverSuggestionInBackground({
-  licenseRow,
-  license,
-  gpu_name,
-  gpu_driver_version,
-  gpu_is_laptop
-}) {
-  if (driverRefreshLocks.has(license)) {
-    return;
-  }
-
-  driverRefreshLocks.add(license);
-
-  try {
-    const suggested = await lookupDriverWithGemini({
-      gpu_name,
-      gpu_driver_version,
-      gpu_is_laptop: Boolean(gpu_is_laptop)
-    });
-
-    if (!suggested) {
-      return;
-    }
-
-    const suggestedPayload = {
-      suggested_driver_status: suggested.status || null,
-      suggested_driver_latest: suggested.latest || null,
-      suggested_driver_download_url:
-        suggested.status === "outdated" ? suggested.download_url || null : null,
-      suggested_driver_checked_at: new Date().toISOString(),
-      driver_note: licenseRow.driver_note || suggested.note || null,
-      updated_at: new Date().toISOString()
-    };
-
-    const { error } = await supabase
-      .from("licenses")
-      .update(suggestedPayload)
-      .eq("license_key", license);
-
-    if (error) {
-      console.error("Background suggested driver update error:", error);
-    }
-  } catch (err) {
-    console.error("Background Gemini lookup error:", err);
-  } finally {
-    driverRefreshLocks.delete(license);
-  }
+  return jsonFromGeminiText(text);
 }
 
 app.get("/", (_req, res) => {
@@ -686,37 +327,80 @@ app.post("/report-gpu", async (req, res) => {
       console.error("GPU update columns error:", gpuUpdateError);
     }
 
-    const mergedLicense = {
+    let suggested = null;
+
+    try {
+      if (gpu_name.toLowerCase().includes("nvidia")) {
+        suggested = await lookupDriverWithGemini({
+          gpu_name,
+          gpu_driver_version,
+          gpu_is_laptop: Boolean(gpu_is_laptop)
+        });
+        console.log("Gemini suggested result:", suggested);
+      }
+    } catch (geminiError) {
+      console.error("Gemini lookup error:", geminiError);
+    }
+
+    if (suggested) {
+      const suggestedPayload = {
+        suggested_driver_status: suggested.status || null,
+        suggested_driver_latest: suggested.latest || null,
+        suggested_driver_download_url: suggested.download_url || null,
+        suggested_driver_checked_at: new Date().toISOString(),
+        driver_note: licenseRow.driver_note || suggested.note || null,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error: suggestedUpdateError } = await supabase
+        .from("licenses")
+        .update(suggestedPayload)
+        .eq("license_key", license);
+
+      if (suggestedUpdateError) {
+        console.error("Suggested driver columns error:", suggestedUpdateError);
+      }
+    }
+
+    const refreshedLicense = {
       ...licenseRow,
-      ...updatePayload
+      suggested_driver_status: suggested?.status || licenseRow.suggested_driver_status || null,
+      suggested_driver_latest: suggested?.latest || licenseRow.suggested_driver_latest || null,
+      suggested_driver_download_url:
+        suggested?.download_url || licenseRow.suggested_driver_download_url || null,
+      driver_note: licenseRow.driver_note || suggested?.note || null
     };
 
-    const responsePayload = getPreferredDriverFields(mergedLicense);
+    const preferredUrl =
+      refreshedLicense.approved_driver_download_url ||
+      refreshedLicense.suggested_driver_download_url ||
+      null;
 
-    if (
-      shouldRefreshDriverSuggestion(
-        licenseRow,
-        gpu_name,
-        gpu_driver_version,
-        license
-      )
-    ) {
-      refreshDriverSuggestionInBackground({
-        licenseRow: mergedLicense,
-        license,
-        gpu_name,
-        gpu_driver_version,
-        gpu_is_laptop: Boolean(gpu_is_laptop)
-      }).catch((err) => {
-        console.error("Detached background refresh error:", err);
-      });
-    }
+    const preferredLatest =
+      refreshedLicense.approved_driver_latest ||
+      refreshedLicense.suggested_driver_latest ||
+      null;
+
+    const preferredNote =
+      refreshedLicense.driver_note ||
+      null;
+
+    const driverUpdateAvailable =
+      Boolean(preferredUrl) &&
+      (
+        Boolean(refreshedLicense.approved_driver_download_url) ||
+        refreshedLicense.suggested_driver_status === "outdated"
+      );
 
     return res.json({
       ok: true,
       gpu_name,
       gpu_driver_version,
-      ...responsePayload
+      driver_update_available: driverUpdateAvailable,
+      driver_download_url: preferredUrl,
+      driver_note: preferredNote,
+      driver_latest_version: preferredLatest,
+      driver_status: refreshedLicense.suggested_driver_status || "unknown"
     });
   } catch (err) {
     console.error("Report GPU route error:", err);
@@ -850,8 +534,8 @@ app.post("/admin/licenses/revoke", requireAdmin, async (req, res) => {
   }
 });
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
 });
