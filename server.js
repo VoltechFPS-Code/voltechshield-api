@@ -39,6 +39,97 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function jsonFromGeminiText(text) {
+  if (!text) return null;
+
+  const trimmed = text.trim();
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const firstBrace = trimmed.indexOf("{");
+    const lastBrace = trimmed.lastIndexOf("}");
+
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const slice = trimmed.slice(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(slice);
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+}
+
+async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop }) {
+  if (!process.env.GEMINI_API_KEY) {
+    return null;
+  }
+
+  const prompt = `
+You are checking NVIDIA driver availability.
+
+Use Google Search and return only JSON.
+
+GPU Name: ${gpu_name}
+Installed Driver Version: ${gpu_driver_version}
+Platform: ${gpu_is_laptop ? "Laptop / Notebook" : "Desktop"}
+
+Rules:
+1. Search only for the correct NVIDIA driver for this exact GPU family and platform.
+2. Prefer WHQL drivers from nvidia.com.
+3. If the installed driver is already current, mark it up-to-date.
+4. If uncertain, set status to "unknown" and leave download_url empty.
+5. Return only valid JSON.
+
+JSON format:
+{
+  "status": "outdated" or "up-to-date" or "unknown",
+  "latest": "xxx.xx",
+  "download_url": "https://...",
+  "note": "short explanation"
+}
+`.trim();
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: prompt }]
+          }
+        ],
+        tools: [{ googleSearch: {} }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0.1
+        }
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Gemini HTTP ${response.status} // ${text}`);
+  }
+
+  const data = await response.json();
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || "")
+      .join("") || "";
+
+  return jsonFromGeminiText(text);
+}
+
 app.get("/", (_req, res) => {
   return res.json({
     ok: true,
@@ -58,9 +149,9 @@ app.get("/health", (_req, res) => {
 
 app.get("/version", (_req, res) => {
   return res.json({
-    version: "0.1.2",
+    version: "0.1.3",
     notes: "Small UI update test.",
-    url: "https://github.com/VoltechFPS-Code/VoltechShieldUpdates/releases/download/v0.1.1/VoltechShield_0.1.1_x64-setup.exe"
+    url: "https://github.com/VoltechFPS-Code/VoltechShieldUpdates/releases/download/v0.1.3/VoltechShield_0.1.3_x64-setup.exe"
   });
 });
 
@@ -173,6 +264,139 @@ app.post("/activate", async (req, res) => {
     console.error("Activation route error:", err);
     return res.status(500).json({
       valid: false,
+      reason: "server_error"
+    });
+  }
+});
+
+app.post("/report-gpu", async (req, res) => {
+  try {
+    const {
+      license,
+      hwid,
+      app_version,
+      gpu_name,
+      gpu_driver_version,
+      gpu_raw_driver_version,
+      gpu_is_laptop,
+      reported_at
+    } = req.body;
+
+    if (!license || !hwid || !gpu_name || !gpu_driver_version) {
+      return res.status(400).json({
+        ok: false,
+        reason: "missing_fields"
+      });
+    }
+
+    const { data: licenseRow, error: licenseError } = await supabase
+      .from("licenses")
+      .select("*")
+      .eq("license_key", license)
+      .single();
+
+    if (licenseError || !licenseRow) {
+      return res.status(404).json({
+        ok: false,
+        reason: "license_not_found"
+      });
+    }
+
+    if (licenseRow.hwid && licenseRow.hwid !== hwid) {
+      return res.status(403).json({
+        ok: false,
+        reason: "hwid_mismatch"
+      });
+    }
+
+    const updatePayload = {
+      gpu_name,
+      gpu_driver_version,
+      gpu_raw_driver_version: gpu_raw_driver_version || null,
+      gpu_is_laptop: Boolean(gpu_is_laptop),
+      last_gpu_reported_at: reported_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    const { error: gpuUpdateError } = await supabase
+      .from("licenses")
+      .update(updatePayload)
+      .eq("license_key", license);
+
+    if (gpuUpdateError) {
+      console.error("GPU update columns error:", gpuUpdateError);
+    }
+
+    let suggested = null;
+
+    try {
+      if (gpu_name.toLowerCase().includes("nvidia")) {
+        suggested = await lookupDriverWithGemini({
+          gpu_name,
+          gpu_driver_version,
+          gpu_is_laptop: Boolean(gpu_is_laptop)
+        });
+      }
+    } catch (geminiError) {
+      console.error("Gemini lookup error:", geminiError);
+    }
+
+    if (suggested) {
+      const suggestedPayload = {
+        suggested_driver_status: suggested.status || null,
+        suggested_driver_latest: suggested.latest || null,
+        suggested_driver_download_url: suggested.download_url || null,
+        suggested_driver_checked_at: new Date().toISOString(),
+        driver_note: licenseRow.driver_note || suggested.note || null,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error: suggestedUpdateError } = await supabase
+        .from("licenses")
+        .update(suggestedPayload)
+        .eq("license_key", license);
+
+      if (suggestedUpdateError) {
+        console.error("Suggested driver columns error:", suggestedUpdateError);
+      }
+    }
+
+    const preferredUrl =
+      licenseRow.approved_driver_download_url ||
+      suggested?.download_url ||
+      null;
+
+    const preferredLatest =
+      licenseRow.approved_driver_latest ||
+      suggested?.latest ||
+      null;
+
+    const preferredNote =
+      licenseRow.driver_note ||
+      suggested?.note ||
+      null;
+
+    const driverUpdateAvailable =
+      Boolean(preferredUrl) &&
+      (
+        (licenseRow.approved_driver_download_url && licenseRow.approved_driver_download_url.length > 0) ||
+        (suggested?.status === "outdated")
+      );
+
+    return res.json({
+      ok: true,
+      gpu_name,
+      gpu_driver_version,
+      driver_update_available: driverUpdateAvailable,
+      driver_download_url: preferredUrl,
+      driver_note: preferredNote,
+      driver_latest_version: preferredLatest,
+      driver_status: suggested?.status || null
+    });
+  } catch (err) {
+    console.error("Report GPU route error:", err);
+    return res.status(500).json({
+      ok: false,
       reason: "server_error"
     });
   }
@@ -306,5 +530,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
 });
-
-
