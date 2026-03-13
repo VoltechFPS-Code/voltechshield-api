@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
+const { Agent } = require("undici");
 
 const app = express();
 
@@ -28,6 +29,14 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+const GEMINI_TIMEOUT_MS = 120000;
+
+const geminiAgent = new Agent({
+  headersTimeout: GEMINI_TIMEOUT_MS,
+  bodyTimeout: GEMINI_TIMEOUT_MS,
+  connectTimeout: 30000
+});
 
 function requireAdmin(req, res, next) {
   const incomingKey = req.headers["x-admin-key"];
@@ -90,12 +99,11 @@ function isDirectNvidiaDownloadUrl(url) {
   }
 }
 
-// NEW HELPER: Constructs the standard NVIDIA DCH WHQL link if we know the version
 function constructNvidiaUrl(version, isLaptop) {
   if (!version) return null;
-  const cleanVersion = version.replace(/[^0-9.]/g, '');
+  const cleanVersion = version.replace(/[^0-9.]/g, "");
   const type = isLaptop ? "notebook" : "desktop";
-  // Modern DCH standard pattern
+
   return `https://us.download.nvidia.com/Windows/${cleanVersion}/${cleanVersion}-${type}-win10-win11-64bit-international-dch-whql.exe`;
 }
 
@@ -125,8 +133,7 @@ function normalizeGeminiDriverResult(result, isLaptop) {
       : null;
 
   let normalizedUrl = isDirectNvidiaDownloadUrl(rawUrl) ? rawUrl : null;
-  
-  // FALLBACK: If Gemini gave us a version but no valid direct link, construct it manually
+
   let usedFallback = false;
   if (!normalizedUrl && normalizedLatest && normalizedStatus === "outdated") {
     normalizedUrl = constructNvidiaUrl(normalizedLatest, isLaptop);
@@ -160,12 +167,50 @@ function normalizeGeminiDriverResult(result, isLaptop) {
   };
 }
 
+async function postGemini(body) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+        dispatcher: geminiAgent
+      }
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Gemini HTTP ${response.status} // ${text}`);
+    }
+
+    return await response.json();
+  } catch (err) {
+    if (
+      err?.name === "AbortError" ||
+      err?.code === "UND_ERR_HEADERS_TIMEOUT" ||
+      err?.cause?.code === "UND_ERR_HEADERS_TIMEOUT"
+    ) {
+      throw new Error("Gemini headers timeout");
+    }
+
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop }) {
   if (!process.env.GEMINI_API_KEY) {
     return null;
   }
 
-  // UPDATED PROMPT: More specific instructions and format hints
   const prompt = `
 You are a specialized hardware assistant for VoltechShield.
 Current Date: ${new Date().toDateString()}
@@ -174,7 +219,7 @@ Installed Driver Version: ${gpu_driver_version}
 
 Task:
 1. Use Google Search to find the absolute latest NVIDIA Game Ready Driver (WHQL) version for this exact GPU family and platform.
-2. Specifically look for results on "nvidia.com" or hardware news sites regarding the latest version.
+2. Specifically look for results on "nvidia.com" or trusted hardware news sites regarding the latest version.
 3. Compare the found version with the installed version (${gpu_driver_version}).
 4. If the installed driver is already current, set status to "up-to-date".
 5. If a newer driver exists, set status to "outdated".
@@ -192,45 +237,29 @@ JSON format:
 }
 `.trim();
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }]
-          }
-        ],
-        tools: [{ google_search: {} }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-          thinkingConfig: {
-            thinkingLevel: "low"
-          }
-        }
-      })
+  const data = await postGemini({
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: prompt }]
+      }
+    ],
+    tools: [{ google_search: {} }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      temperature: 0.1,
+      thinkingConfig: {
+        thinkingLevel: "low"
+      }
     }
-  );
+  });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Gemini HTTP ${response.status} // ${text}`);
-  }
-
-  const data = await response.json();
   const text =
     data?.candidates?.[0]?.content?.parts
       ?.map((part) => part.text || "")
       .join("") || "";
 
   const parsed = jsonFromGeminiText(text);
-  // Pass the laptop boolean to the normalizer for the fallback builder
   const normalized = normalizeGeminiDriverResult(parsed, gpu_is_laptop);
 
   console.log("Gemini raw text:", text);
@@ -448,6 +477,13 @@ app.post("/report-gpu", async (req, res) => {
       }
     } catch (geminiError) {
       console.error("Gemini lookup error:", geminiError);
+
+      suggested = {
+        status: "unknown",
+        latest: null,
+        download_url: null,
+        note: "Gemini lookup timed out or failed."
+      };
     }
 
     if (suggested) {
