@@ -94,7 +94,7 @@ JSON format:
 `.trim();
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
     {
       method: "POST",
       headers: {
@@ -336,6 +336,7 @@ app.post("/report-gpu", async (req, res) => {
           gpu_driver_version,
           gpu_is_laptop: Boolean(gpu_is_laptop)
         });
+        console.log("Gemini suggested result:", suggested);
       }
     } catch (geminiError) {
       console.error("Gemini lookup error:", geminiError);
@@ -361,26 +362,34 @@ app.post("/report-gpu", async (req, res) => {
       }
     }
 
+    const refreshedLicense = {
+      ...licenseRow,
+      suggested_driver_status: suggested?.status || licenseRow.suggested_driver_status || null,
+      suggested_driver_latest: suggested?.latest || licenseRow.suggested_driver_latest || null,
+      suggested_driver_download_url:
+        suggested?.download_url || licenseRow.suggested_driver_download_url || null,
+      driver_note: licenseRow.driver_note || suggested?.note || null
+    };
+
     const preferredUrl =
-      licenseRow.approved_driver_download_url ||
-      suggested?.download_url ||
+      refreshedLicense.approved_driver_download_url ||
+      refreshedLicense.suggested_driver_download_url ||
       null;
 
     const preferredLatest =
-      licenseRow.approved_driver_latest ||
-      suggested?.latest ||
+      refreshedLicense.approved_driver_latest ||
+      refreshedLicense.suggested_driver_latest ||
       null;
 
     const preferredNote =
-      licenseRow.driver_note ||
-      suggested?.note ||
+      refreshedLicense.driver_note ||
       null;
 
     const driverUpdateAvailable =
       Boolean(preferredUrl) &&
       (
-        (licenseRow.approved_driver_download_url && licenseRow.approved_driver_download_url.length > 0) ||
-        (suggested?.status === "outdated")
+        Boolean(refreshedLicense.approved_driver_download_url) ||
+        refreshedLicense.suggested_driver_status === "outdated"
       );
 
     return res.json({
@@ -391,7 +400,7 @@ app.post("/report-gpu", async (req, res) => {
       driver_download_url: preferredUrl,
       driver_note: preferredNote,
       driver_latest_version: preferredLatest,
-      driver_status: suggested?.status || null
+      driver_status: refreshedLicense.suggested_driver_status || "unknown"
     });
   } catch (err) {
     console.error("Report GPU route error:", err);
