@@ -63,28 +63,97 @@ function jsonFromGeminiText(text) {
   }
 }
 
+function sanitizeDriverResult(result) {
+  if (!result || typeof result !== "object") {
+    return {
+      status: "unknown",
+      latest: null,
+      download_url: null,
+      note: "No structured Gemini result returned."
+    };
+  }
+
+  const status =
+    result.status === "outdated" ||
+    result.status === "up-to-date" ||
+    result.status === "unknown"
+      ? result.status
+      : "unknown";
+
+  const latest =
+    typeof result.latest === "string" && result.latest.trim()
+      ? result.latest.trim()
+      : null;
+
+  let downloadUrl =
+    typeof result.download_url === "string" && result.download_url.trim()
+      ? result.download_url.trim()
+      : null;
+
+  const note =
+    typeof result.note === "string" && result.note.trim()
+      ? result.note.trim()
+      : null;
+
+  if (downloadUrl) {
+    const lower = downloadUrl.toLowerCase();
+
+    const obviouslyBad =
+      lower.includes("nvidia.com/download/index.aspx") ||
+      lower.includes("nvidia.com/download/find.aspx") ||
+      lower.includes("nvidia.com/en-us/drivers/") ||
+      lower.includes("nvidia.com/en-eu/drivers/") ||
+      lower.includes("/drivers/results/");
+
+    if (obviouslyBad) {
+      downloadUrl = null;
+    }
+  }
+
+  return {
+    status,
+    latest,
+    download_url: downloadUrl,
+    note
+  };
+}
+
 async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop }) {
   if (!process.env.GEMINI_API_KEY) {
     return null;
   }
 
   const prompt = `
-You are checking NVIDIA driver availability.
+You are checking NVIDIA driver availability and MUST return a DIRECT DOWNLOAD LINK to the actual driver installer when possible.
 
-Use Google Search and return only JSON.
+Use Google Search and return only valid JSON.
 
-GPU Name: ${gpu_name}
+Target GPU: ${gpu_name}
 Installed Driver Version: ${gpu_driver_version}
 Platform: ${gpu_is_laptop ? "Laptop / Notebook" : "Desktop"}
 
-Rules:
-1. Search only for the correct NVIDIA driver for this exact GPU family and platform.
-2. Prefer WHQL drivers from nvidia.com.
-3. If the installed driver is already current, mark it up-to-date.
-4. If uncertain, set status to "unknown" and leave download_url empty.
-5. Return only valid JSON.
+Your task:
+1. Determine whether a newer NVIDIA WHQL driver exists for this exact GPU and platform.
+2. Find the newest correct NVIDIA driver version.
+3. Return a DIRECT download URL to the actual installer file if possible.
 
-JSON format:
+Very important URL rules:
+- Prefer a direct NVIDIA installer link ending in .exe.
+- Prefer actual downloadable NVIDIA package links, not landing pages.
+- DO NOT return generic NVIDIA search pages.
+- DO NOT return:
+  - https://www.nvidia.com/Download/index.aspx
+  - https://www.nvidia.com/en-us/drivers/
+  - https://www.nvidia.com/en-eu/drivers/
+  - driver results pages unless no direct .exe can be found
+- If you cannot confidently find a direct installer URL, return an empty string for download_url.
+
+Decision rules:
+- If installed driver is older than the newest correct one, set status to "outdated".
+- If installed driver matches the newest correct one, set status to "up-to-date".
+- If uncertain, set status to "unknown".
+
+Return only this JSON:
 {
   "status": "outdated" or "up-to-date" or "unknown",
   "latest": "xxx.xx",
@@ -110,7 +179,7 @@ JSON format:
         tools: [{ googleSearch: {} }],
         generationConfig: {
           responseMimeType: "application/json",
-          temperature: 0.1
+          temperature: 0.05
         }
       })
     }
@@ -127,7 +196,8 @@ JSON format:
       ?.map((part) => part.text || "")
       .join("") || "";
 
-  return jsonFromGeminiText(text);
+  const parsed = jsonFromGeminiText(text);
+  return sanitizeDriverResult(parsed);
 }
 
 app.get("/", (_req, res) => {
