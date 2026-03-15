@@ -219,9 +219,9 @@ app.get("/health", (_req, res) => {
 
 app.get("/version", (_req, res) => {
   return res.json({
-    version: "0.1.3",
-    notes: "Small UI update test.",
-    url: "https://github.com/VoltechFPS-Code/VoltechShieldUpdates/releases/download/v0.1.3/VoltechShield_0.1.3_x64-setup.exe"
+    version: "0.1.2",
+    notes: "Functioning Driver System",
+    url: "https://github.com/VoltechFPS-Code/VoltechShieldUpdates/releases/download/v0.1.2/VoltechShield_0.1.3_x64-setup.exe"
   });
 });
 
@@ -609,3 +609,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
 });
+
