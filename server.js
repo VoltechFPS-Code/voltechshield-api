@@ -726,3 +726,35 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
 });
+
+app.post("/admin/licenses/create", requireAdmin, async (req, res) => {
+  try {
+    const { license_key, email, plan, status } = req.body;
+
+    if (!license_key || !email) {
+      return res.status(400).json({ error: "missing_fields" });
+    }
+
+    const { error } = await supabase
+      .from("licenses")
+      .upsert(
+        {
+          license_key,
+          hwid: null,
+          email,
+          plan: plan || "monthly",
+          status: status || "active",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "license_key", ignoreDuplicates: true }
+      );
+
+    if (error) throw error;
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Create license route error:", err);
+    return res.status(500).json({ error: "create_license_failed" });
+  }
+});
