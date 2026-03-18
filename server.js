@@ -118,7 +118,22 @@ function sanitizeDriverResult(result) {
   };
 }
 
-async function lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop }) {
+function getMaintenanceFlags(licenseRow) {
+  return {
+    recommended_maintenance: Boolean(
+      licenseRow.recommended_maintenance ?? false
+    ),
+    recommended_maintenance_message:
+      licenseRow.recommended_maintenance_message ||
+      "Recommended maintenance available from Voltech."
+  };
+}
+
+async function lookupDriverWithGemini({
+  gpu_name,
+  gpu_driver_version,
+  gpu_is_laptop
+}) {
   if (!process.env.GEMINI_API_KEY) {
     return null;
   }
@@ -250,6 +265,8 @@ app.post("/activate", async (req, res) => {
       return res.json({ valid: false, reason: "license_not_found" });
     }
 
+    const maintenanceFlags = getMaintenanceFlags(licenseRow);
+
     if (licenseRow.status !== "active") {
       await supabase.from("activations").insert({
         license_key: license,
@@ -258,7 +275,11 @@ app.post("/activate", async (req, res) => {
         app_version: app_version || null
       });
 
-      return res.json({ valid: false, reason: "inactive" });
+      return res.json({
+        valid: false,
+        reason: "inactive",
+        ...maintenanceFlags
+      });
     }
 
     if (licenseRow.expires_at && new Date(licenseRow.expires_at) < new Date()) {
@@ -269,7 +290,11 @@ app.post("/activate", async (req, res) => {
         app_version: app_version || null
       });
 
-      return res.json({ valid: false, reason: "expired" });
+      return res.json({
+        valid: false,
+        reason: "expired",
+        ...maintenanceFlags
+      });
     }
 
     if (!licenseRow.hwid) {
@@ -290,7 +315,11 @@ app.post("/activate", async (req, res) => {
           app_version: app_version || null
         });
 
-        return res.json({ valid: false, reason: "bind_failed" });
+        return res.json({
+          valid: false,
+          reason: "bind_failed",
+          ...maintenanceFlags
+        });
       }
 
       await supabase.from("activations").insert({
@@ -300,7 +329,11 @@ app.post("/activate", async (req, res) => {
         app_version: app_version || null
       });
 
-      return res.json({ valid: true, reason: "first_activation_success" });
+      return res.json({
+        valid: true,
+        reason: "first_activation_success",
+        ...maintenanceFlags
+      });
     }
 
     if (licenseRow.hwid !== hwid) {
@@ -311,7 +344,11 @@ app.post("/activate", async (req, res) => {
         app_version: app_version || null
       });
 
-      return res.json({ valid: false, reason: "hwid_mismatch" });
+      return res.json({
+        valid: false,
+        reason: "hwid_mismatch",
+        ...maintenanceFlags
+      });
     }
 
     await supabase
@@ -329,7 +366,11 @@ app.post("/activate", async (req, res) => {
       app_version: app_version || null
     });
 
-    return res.json({ valid: true, reason: "validation_success" });
+    return res.json({
+      valid: true,
+      reason: "validation_success",
+      ...maintenanceFlags
+    });
   } catch (err) {
     console.error("Activation route error:", err);
     return res.status(500).json({
@@ -451,9 +492,7 @@ app.post("/report-gpu", async (req, res) => {
       refreshedLicense.suggested_driver_latest ||
       null;
 
-    const preferredNote =
-      refreshedLicense.driver_note ||
-      null;
+    const preferredNote = refreshedLicense.driver_note || null;
 
     const driverUpdateAvailable =
       Boolean(preferredUrl) &&
@@ -566,6 +605,18 @@ app.post("/admin/licenses/reset-hwid", requireAdmin, async (req, res) => {
       .from("licenses")
       .update({
         hwid: null,
+        gpu_name: null,
+        gpu_driver_version: null,
+        gpu_raw_driver_version: null,
+        gpu_is_laptop: null,
+        last_gpu_reported_at: null,
+        suggested_driver_status: null,
+        suggested_driver_latest: null,
+        suggested_driver_download_url: null,
+        suggested_driver_checked_at: null,
+        approved_driver_latest: null,
+        approved_driver_download_url: null,
+        driver_note: null,
         updated_at: new Date().toISOString()
       })
       .eq("license_key", license_key);
@@ -576,6 +627,72 @@ app.post("/admin/licenses/reset-hwid", requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("Reset HWID route error:", err);
     return res.status(500).json({ error: "reset_hwid_failed" });
+  }
+});
+
+app.post("/admin/licenses/set-maintenance", requireAdmin, async (req, res) => {
+  try {
+    const {
+      license_key,
+      recommended_maintenance,
+      recommended_maintenance_message
+    } = req.body;
+
+    if (!license_key) {
+      return res.status(400).json({ error: "missing_license_key" });
+    }
+
+    const updatePayload = {
+      recommended_maintenance: Boolean(recommended_maintenance),
+      recommended_maintenance_message:
+        typeof recommended_maintenance_message === "string" &&
+        recommended_maintenance_message.trim()
+          ? recommended_maintenance_message.trim()
+          : null,
+      updated_at: new Date().toISOString()
+    };
+
+    const { error } = await supabase
+      .from("licenses")
+      .update(updatePayload)
+      .eq("license_key", license_key);
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      recommended_maintenance: updatePayload.recommended_maintenance,
+      recommended_maintenance_message: updatePayload.recommended_maintenance_message
+    });
+  } catch (err) {
+    console.error("Set maintenance route error:", err);
+    return res.status(500).json({ error: "set_maintenance_failed" });
+  }
+});
+
+app.post("/admin/licenses/clear-maintenance", requireAdmin, async (req, res) => {
+  try {
+    const { license_key } = req.body;
+
+    if (!license_key) {
+      return res.status(400).json({ error: "missing_license_key" });
+    }
+
+    const { error } = await supabase
+      .from("licenses")
+      .update({
+        recommended_maintenance: false,
+        recommended_maintenance_message: null,
+        updated_at: new Date().toISOString()
+      })
+      .eq("license_key", license_key);
+
+    if (error) throw error;
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Clear maintenance route error:", err);
+    return res.status(500).json({ error: "clear_maintenance_failed" });
   }
 });
 
@@ -609,4 +726,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
 });
-
