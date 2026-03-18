@@ -475,10 +475,14 @@ app.post("/report-gpu", async (req, res) => {
 
     const refreshedLicense = {
       ...licenseRow,
-      suggested_driver_status: suggested?.status || licenseRow.suggested_driver_status || null,
-      suggested_driver_latest: suggested?.latest || licenseRow.suggested_driver_latest || null,
+      suggested_driver_status:
+        suggested?.status || licenseRow.suggested_driver_status || null,
+      suggested_driver_latest:
+        suggested?.latest || licenseRow.suggested_driver_latest || null,
       suggested_driver_download_url:
-        suggested?.download_url || licenseRow.suggested_driver_download_url || null,
+        suggested?.download_url ||
+        licenseRow.suggested_driver_download_url ||
+        null,
       driver_note: licenseRow.driver_note || suggested?.note || null
     };
 
@@ -496,10 +500,8 @@ app.post("/report-gpu", async (req, res) => {
 
     const driverUpdateAvailable =
       Boolean(preferredUrl) &&
-      (
-        Boolean(refreshedLicense.approved_driver_download_url) ||
-        refreshedLicense.suggested_driver_status === "outdated"
-      );
+      (Boolean(refreshedLicense.approved_driver_download_url) ||
+        refreshedLicense.suggested_driver_status === "outdated");
 
     return res.json({
       ok: true,
@@ -580,7 +582,9 @@ app.get("/admin/licenses/search", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("licenses")
       .select("*")
-      .or(`license_key.ilike.%${q}%,hwid.ilike.%${q}%`)
+      .or(
+        `license_key.ilike.%${q}%,hwid.ilike.%${q}%,email.ilike.%${q}%,discord.ilike.%${q}%`
+      )
       .order("created_at", { ascending: false })
       .limit(25);
 
@@ -662,7 +666,8 @@ app.post("/admin/licenses/set-maintenance", requireAdmin, async (req, res) => {
     return res.json({
       success: true,
       recommended_maintenance: updatePayload.recommended_maintenance,
-      recommended_maintenance_message: updatePayload.recommended_maintenance_message
+      recommended_maintenance_message:
+        updatePayload.recommended_maintenance_message
     });
   } catch (err) {
     console.error("Set maintenance route error:", err);
@@ -670,31 +675,35 @@ app.post("/admin/licenses/set-maintenance", requireAdmin, async (req, res) => {
   }
 });
 
-app.post("/admin/licenses/clear-maintenance", requireAdmin, async (req, res) => {
-  try {
-    const { license_key } = req.body;
+app.post(
+  "/admin/licenses/clear-maintenance",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { license_key } = req.body;
 
-    if (!license_key) {
-      return res.status(400).json({ error: "missing_license_key" });
+      if (!license_key) {
+        return res.status(400).json({ error: "missing_license_key" });
+      }
+
+      const { error } = await supabase
+        .from("licenses")
+        .update({
+          recommended_maintenance: false,
+          recommended_maintenance_message: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq("license_key", license_key);
+
+      if (error) throw error;
+
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("Clear maintenance route error:", err);
+      return res.status(500).json({ error: "clear_maintenance_failed" });
     }
-
-    const { error } = await supabase
-      .from("licenses")
-      .update({
-        recommended_maintenance: false,
-        recommended_maintenance_message: null,
-        updated_at: new Date().toISOString()
-      })
-      .eq("license_key", license_key);
-
-    if (error) throw error;
-
-    return res.json({ success: true });
-  } catch (err) {
-    console.error("Clear maintenance route error:", err);
-    return res.status(500).json({ error: "clear_maintenance_failed" });
   }
-});
+);
 
 app.post("/admin/licenses/revoke", requireAdmin, async (req, res) => {
   try {
@@ -721,15 +730,37 @@ app.post("/admin/licenses/revoke", requireAdmin, async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+app.post("/admin/licenses/set-discord", requireAdmin, async (req, res) => {
+  try {
+    const { license_key, discord } = req.body;
 
-app.listen(PORT, () => {
-  console.log(`Voltech Shield license server running on port ${PORT}`);
+    if (!license_key) {
+      return res.status(400).json({ error: "missing_license_key" });
+    }
+
+    const { error } = await supabase
+      .from("licenses")
+      .update({
+        discord:
+          typeof discord === "string" && discord.trim()
+            ? discord.trim()
+            : null,
+        updated_at: new Date().toISOString()
+      })
+      .eq("license_key", license_key);
+
+    if (error) throw error;
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Set discord route error:", err);
+    return res.status(500).json({ error: "set_discord_failed" });
+  }
 });
 
 app.post("/admin/licenses/create", requireAdmin, async (req, res) => {
   try {
-    const { license_key, email, plan, status } = req.body;
+    const { license_key, email, discord, plan, status } = req.body;
 
     if (!license_key || !email) {
       return res.status(400).json({ error: "missing_fields" });
@@ -742,10 +773,14 @@ app.post("/admin/licenses/create", requireAdmin, async (req, res) => {
           license_key,
           hwid: null,
           email,
+          discord:
+            typeof discord === "string" && discord.trim()
+              ? discord.trim()
+              : null,
           plan: plan || "monthly",
           status: status || "active",
           created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
         },
         { onConflict: "license_key", ignoreDuplicates: true }
       );
@@ -757,4 +792,10 @@ app.post("/admin/licenses/create", requireAdmin, async (req, res) => {
     console.error("Create license route error:", err);
     return res.status(500).json({ error: "create_license_failed" });
   }
+});
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Voltech Shield license server running on port ${PORT}`);
 });
