@@ -234,9 +234,9 @@ app.get("/health", (_req, res) => {
 
 app.get("/version", (_req, res) => {
   return res.json({
-    version: "1.0.0",
-    notes: "First Public Release",
-    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v1.0.0/VoltechShield_1.0.0_x64-setup.exe"
+    version: "1.0.1",
+    notes: "Patches for Hotkey, CMD Terminal, Minor Bug Fixes",
+    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v1.0.1/VoltechShield_1.0.1_x64-setup.exe"
   });
 });
 
