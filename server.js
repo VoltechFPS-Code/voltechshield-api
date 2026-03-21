@@ -37,7 +37,7 @@ const supabase = createClient(
 //   ANNOUNCEMENT_MESSAGE=Your message here
 const ANNOUNCEMENT = {
   active: process.env.ANNOUNCEMENT_ACTIVE !== "false", // defaults ON — set ANNOUNCEMENT_ACTIVE=false in Render env vars to turn off
-  message: process.env.ANNOUNCEMENT_MESSAGE || "TESTING ANNOUNCEMENT BOX --- صندوق الإعلانات - نسخة تجريبية " // <-- PUT YOUR ANNOUNCEMENT MESSAGE HERE
+  message: process.env.ANNOUNCEMENT_MESSAGE || "أهلاً بضيوفنا الكرام، مرحباً بكم في الإصدار 1.0.2" // <-- PUT YOUR ANNOUNCEMENT MESSAGE HERE
 };
 
 function requireAdmin(req, res, next) {
