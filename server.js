@@ -36,8 +36,8 @@ const supabase = createClient(
 //   ANNOUNCEMENT_ACTIVE=true
 //   ANNOUNCEMENT_MESSAGE=Your message here
 const ANNOUNCEMENT = {
-  active: process.env.ANNOUNCEMENT_ACTIVE === "true",
-  message: process.env.ANNOUNCEMENT_MESSAGE || "TESTING!!" // <-- PUT YOUR ANNOUNCEMENT MESSAGE HERE
+  active: process.env.ANNOUNCEMENT_ACTIVE !== "false", // defaults ON — set ANNOUNCEMENT_ACTIVE=false in Render env vars to turn off
+  message: process.env.ANNOUNCEMENT_MESSAGE || "" // <-- PUT YOUR ANNOUNCEMENT MESSAGE HERE
 };
 
 function requireAdmin(req, res, next) {
