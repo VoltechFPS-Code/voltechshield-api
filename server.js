@@ -29,6 +29,17 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// ── Public Announcement ────────────────────────────────────────────────────
+// Single source of truth. Initialized from env vars at startup.
+// Can be overridden at runtime via POST /admin/announcement without redeploying.
+// NOTE: runtime changes reset on Render restart. For permanent changes, use env vars.
+//   ANNOUNCEMENT_ACTIVE=true
+//   ANNOUNCEMENT_MESSAGE=Your message here
+const ANNOUNCEMENT = {
+  active: process.env.ANNOUNCEMENT_ACTIVE === "true",
+  message: process.env.ANNOUNCEMENT_MESSAGE || "TESTING!!" // <-- PUT YOUR ANNOUNCEMENT MESSAGE HERE
+};
+
 function requireAdmin(req, res, next) {
   const incomingKey = req.headers["x-admin-key"];
 
@@ -215,6 +226,8 @@ Return only this JSON:
   return sanitizeDriverResult(parsed);
 }
 
+// ── Routes ─────────────────────────────────────────────────────────────────
+
 app.get("/", (_req, res) => {
   return res.json({
     ok: true,
@@ -232,11 +245,37 @@ app.get("/health", (_req, res) => {
   });
 });
 
+// Bump version here when releasing a new build.
+// The app compares this against its own APP_VERSION and shows the update alert
+// if this value is higher.
 app.get("/version", (_req, res) => {
   return res.json({
-    version: "1.0.1",
-    notes: "Patches for Hotkey, CMD Terminal, Minor Bug Fixes",
-    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v1.0.1/VoltechShield_1.0.1_x64-setup.exe"
+    version: "1.0.2",
+    notes: "OBS Tutorial, Public Announcements, GPU Driver Polling, Nvidia App Warning, Single Instance Guard",
+    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v1.0.2/VoltechShield_1.0.2_x64-setup.exe"
+  });
+});
+
+// GET /announcement — app polls this on startup and every 20 minutes
+app.get("/announcement", (_req, res) => {
+  return res.json({
+    active: Boolean(ANNOUNCEMENT.active),
+    message: ANNOUNCEMENT.active ? String(ANNOUNCEMENT.message || "") : ""
+  });
+});
+
+// POST /admin/announcement — toggle announcement live without redeploying
+// Body: { "active": true, "message": "Your message here" }
+// Header: x-admin-key: <your ADMIN_DASHBOARD_KEY>
+app.post("/admin/announcement", requireAdmin, (req, res) => {
+  const { active, message } = req.body;
+  ANNOUNCEMENT.active = Boolean(active);
+  ANNOUNCEMENT.message = typeof message === "string" ? message.trim() : "";
+  console.log(`Announcement updated: active=${ANNOUNCEMENT.active} message="${ANNOUNCEMENT.message}"`);
+  return res.json({
+    success: true,
+    active: ANNOUNCEMENT.active,
+    message: ANNOUNCEMENT.message
   });
 });
 
