@@ -251,7 +251,7 @@ app.get("/health", (_req, res) => {
 app.get("/version", (_req, res) => {
   return res.json({
     version: "1.0.2",
-    notes: "OBS Tutorial, Public Announcements, GPU Driver Polling, Nvidia App Warning, Single Instance Guard",
+    notes: "OBS Tutorial, Public Announcements, GPU Driver Polling, Nvidia App Warning, Single Instance Guard, Arabic Toggle, Reshuffled UI",
     url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v1.0.2/VoltechShield_1.0.2_x64-setup.exe"
   });
 });
