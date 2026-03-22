@@ -36,8 +36,10 @@ const supabase = createClient(
 //   ANNOUNCEMENT_ACTIVE=true
 //   ANNOUNCEMENT_MESSAGE=Your message here
 const ANNOUNCEMENT = {
-  active: process.env.ANNOUNCEMENT_ACTIVE !== "false", // defaults ON — set ANNOUNCEMENT_ACTIVE=false in Render env vars to turn off
-  message: process.env.ANNOUNCEMENT_MESSAGE || "أهلاً بضيوفنا الكرام، مرحباً بكم في الإصدار 1.0.2" // <-- PUT YOUR ANNOUNCEMENT MESSAGE HERE
+  active: process.env.ANNOUNCEMENT_ACTIVE !== "false",
+  message:
+    process.env.ANNOUNCEMENT_MESSAGE ||
+    "أهلاً بضيوفنا الكرام، مرحباً بكم في الإصدار 1.0.2"
 };
 
 function requireAdmin(req, res, next) {
@@ -138,6 +140,20 @@ function getMaintenanceFlags(licenseRow) {
       licenseRow.recommended_maintenance_message ||
       "Recommended maintenance available from Voltech."
   };
+}
+
+function isLicenseExpired(licenseRow) {
+  return Boolean(
+    licenseRow.expires_at && new Date(licenseRow.expires_at) < new Date()
+  );
+}
+
+function isPaymentSatisfied(licenseRow) {
+  return (
+    licenseRow.is_legacy === true ||
+    licenseRow.payment_required === false ||
+    licenseRow.payment_status === "paid"
+  );
 }
 
 async function lookupDriverWithGemini({
@@ -251,7 +267,8 @@ app.get("/health", (_req, res) => {
 app.get("/version", (_req, res) => {
   return res.json({
     version: "1.0.2",
-    notes: "OBS Tutorial, Public Announcements, GPU Driver Polling, Nvidia App Warning, Single Instance Guard, Arabic Toggle, Reshuffled UI",
+    notes:
+      "OBS Tutorial, Public Announcements, GPU Driver Polling, Nvidia App Warning, Single Instance Guard, Arabic Toggle, Reshuffled UI",
     url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v1.0.2/VoltechShield_1.0.2_x64-setup.exe"
   });
 });
@@ -271,7 +288,9 @@ app.post("/admin/announcement", requireAdmin, (req, res) => {
   const { active, message } = req.body;
   ANNOUNCEMENT.active = Boolean(active);
   ANNOUNCEMENT.message = typeof message === "string" ? message.trim() : "";
-  console.log(`Announcement updated: active=${ANNOUNCEMENT.active} message="${ANNOUNCEMENT.message}"`);
+  console.log(
+    `Announcement updated: active=${ANNOUNCEMENT.active} message="${ANNOUNCEMENT.message}"`
+  );
   return res.json({
     success: true,
     active: ANNOUNCEMENT.active,
@@ -305,6 +324,8 @@ app.post("/activate", async (req, res) => {
     }
 
     const maintenanceFlags = getMaintenanceFlags(licenseRow);
+    const expired = isLicenseExpired(licenseRow);
+    const paymentSatisfied = isPaymentSatisfied(licenseRow);
 
     if (licenseRow.status !== "active") {
       await supabase.from("activations").insert({
@@ -321,7 +342,7 @@ app.post("/activate", async (req, res) => {
       });
     }
 
-    if (licenseRow.expires_at && new Date(licenseRow.expires_at) < new Date()) {
+    if (expired) {
       await supabase.from("activations").insert({
         license_key: license,
         hwid,
@@ -332,6 +353,21 @@ app.post("/activate", async (req, res) => {
       return res.json({
         valid: false,
         reason: "expired",
+        ...maintenanceFlags
+      });
+    }
+
+    if (!paymentSatisfied) {
+      await supabase.from("activations").insert({
+        license_key: license,
+        hwid,
+        result: "payment_required",
+        app_version: app_version || null
+      });
+
+      return res.json({
+        valid: false,
+        reason: "payment_required",
         ...maintenanceFlags
       });
     }
@@ -799,30 +835,49 @@ app.post("/admin/licenses/set-discord", requireAdmin, async (req, res) => {
 
 app.post("/admin/licenses/create", requireAdmin, async (req, res) => {
   try {
-    const { license_key, email, discord, plan, status } = req.body;
+    const {
+      license_key,
+      email,
+      discord,
+      plan,
+      status,
+      expires_at,
+      issued_by
+    } = req.body;
 
     if (!license_key || !email) {
       return res.status(400).json({ error: "missing_fields" });
     }
 
-    const { error } = await supabase
-      .from("licenses")
-      .upsert(
-        {
-          license_key,
-          hwid: null,
-          email,
-          discord:
-            typeof discord === "string" && discord.trim()
-              ? discord.trim()
-              : null,
-          plan: plan || "monthly",
-          status: status || "active",
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        },
-        { onConflict: "license_key", ignoreDuplicates: true }
-      );
+    const nowIso = new Date().toISOString();
+
+    const payload = {
+      license_key,
+      hwid: null,
+      email,
+      discord:
+        typeof discord === "string" && discord.trim()
+          ? discord.trim()
+          : null,
+      plan: plan || "monthly",
+      status: status || "active",
+      expires_at: expires_at || null,
+      created_manually: true,
+      issued_by:
+        typeof issued_by === "string" && issued_by.trim()
+          ? issued_by.trim()
+          : "technician",
+      payment_required: false,
+      payment_status: "waived",
+      is_legacy: true,
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+
+    const { error } = await supabase.from("licenses").upsert(payload, {
+      onConflict: "license_key",
+      ignoreDuplicates: true
+    });
 
     if (error) throw error;
 
@@ -830,6 +885,50 @@ app.post("/admin/licenses/create", requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("Create license route error:", err);
     return res.status(500).json({ error: "create_license_failed" });
+  }
+});
+
+app.post("/admin/licenses/create-paid", requireAdmin, async (req, res) => {
+  try {
+    const { license_key, email, discord, plan, expires_at } = req.body;
+
+    if (!license_key || !email) {
+      return res.status(400).json({ error: "missing_fields" });
+    }
+
+    const nowIso = new Date().toISOString();
+
+    const payload = {
+      license_key,
+      hwid: null,
+      email,
+      discord:
+        typeof discord === "string" && discord.trim()
+          ? discord.trim()
+          : null,
+      plan: plan || "monthly",
+      status: "inactive",
+      expires_at: expires_at || null,
+      created_manually: false,
+      issued_by: "payment_system",
+      payment_required: true,
+      payment_status: "pending",
+      is_legacy: false,
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+
+    const { error } = await supabase.from("licenses").upsert(payload, {
+      onConflict: "license_key",
+      ignoreDuplicates: true
+    });
+
+    if (error) throw error;
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Create paid license route error:", err);
+    return res.status(500).json({ error: "create_paid_license_failed" });
   }
 });
 
