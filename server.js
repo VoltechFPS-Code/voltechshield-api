@@ -29,12 +29,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// ── Public Announcement ────────────────────────────────────────────────────
-// Single source of truth. Initialized from env vars at startup.
-// Can be overridden at runtime via POST /admin/announcement without redeploying.
-// NOTE: runtime changes reset on Render restart. For permanent changes, use env vars.
-//   ANNOUNCEMENT_ACTIVE=true
-//   ANNOUNCEMENT_MESSAGE=Your message here
+// Public announcement
 const ANNOUNCEMENT = {
   active: process.env.ANNOUNCEMENT_ACTIVE !== "false",
   message:
@@ -156,6 +151,21 @@ function isPaymentSatisfied(licenseRow) {
   );
 }
 
+function generateOrderRef() {
+  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `ORD-${Date.now()}-${rand}`;
+}
+
+function addDaysIso(baseDateLike, daysToAdd) {
+  const base =
+    baseDateLike && new Date(baseDateLike) > new Date()
+      ? new Date(baseDateLike)
+      : new Date();
+
+  base.setDate(base.getDate() + daysToAdd);
+  return base.toISOString();
+}
+
 async function lookupDriverWithGemini({
   gpu_name,
   gpu_driver_version,
@@ -242,7 +252,85 @@ Return only this JSON:
   return sanitizeDriverResult(parsed);
 }
 
-// ── Routes ─────────────────────────────────────────────────────────────────
+async function createMamoPaymentLink({
+  amount,
+  currency,
+  description,
+  customer_name,
+  customer_email,
+  order_ref
+}) {
+  if (!process.env.MAMO_API_KEY || !process.env.MAMO_API_BASE_URL) {
+    throw new Error("Missing MAMO env vars");
+  }
+
+  const response = await fetch(`${process.env.MAMO_API_BASE_URL}/links`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.MAMO_API_KEY}`
+    },
+    body: JSON.stringify({
+      title: description,
+      description,
+      amount,
+      currency,
+      external_id: order_ref,
+      customer: {
+        name: customer_name || "",
+        email: customer_email || ""
+      }
+    })
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Mamo create link failed: ${response.status} // ${text}`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Mamo create link non-JSON response: ${text}`);
+  }
+
+  return data;
+}
+
+async function fetchMamoPaymentStatus(providerOrderId) {
+  if (!process.env.MAMO_API_KEY || !process.env.MAMO_API_BASE_URL) {
+    throw new Error("Missing MAMO env vars");
+  }
+
+  const response = await fetch(
+    `${process.env.MAMO_API_BASE_URL}/links/${providerOrderId}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${process.env.MAMO_API_KEY}`
+      }
+    }
+  );
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Mamo fetch status failed: ${response.status} // ${text}`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Mamo status non-JSON response: ${text}`);
+  }
+
+  return data;
+}
+
+// Routes
 
 app.get("/", (_req, res) => {
   return res.json({
@@ -261,9 +349,6 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// Bump version here when releasing a new build.
-// The app compares this against its own APP_VERSION and shows the update alert
-// if this value is higher.
 app.get("/version", (_req, res) => {
   return res.json({
     version: "1.0.2",
@@ -273,7 +358,6 @@ app.get("/version", (_req, res) => {
   });
 });
 
-// GET /announcement — app polls this on startup and every 20 minutes
 app.get("/announcement", (_req, res) => {
   return res.json({
     active: Boolean(ANNOUNCEMENT.active),
@@ -281,9 +365,6 @@ app.get("/announcement", (_req, res) => {
   });
 });
 
-// POST /admin/announcement — toggle announcement live without redeploying
-// Body: { "active": true, "message": "Your message here" }
-// Header: x-admin-key: <your ADMIN_DASHBOARD_KEY>
 app.post("/admin/announcement", requireAdmin, (req, res) => {
   const { active, message } = req.body;
   ANNOUNCEMENT.active = Boolean(active);
@@ -929,6 +1010,318 @@ app.post("/admin/licenses/create-paid", requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("Create paid license route error:", err);
     return res.status(500).json({ error: "create_paid_license_failed" });
+  }
+});
+
+app.post("/admin/payments/create-mamo-order", requireAdmin, async (req, res) => {
+  try {
+    const {
+      license_key,
+      email,
+      discord,
+      customer_name,
+      phone,
+      plan_code,
+      amount,
+      currency,
+      expires_at
+    } = req.body;
+
+    if (!license_key || !email || !plan_code || !amount) {
+      return res.status(400).json({ error: "missing_fields" });
+    }
+
+    const nowIso = new Date().toISOString();
+
+    const paidLicensePayload = {
+      license_key,
+      hwid: null,
+      email,
+      discord:
+        typeof discord === "string" && discord.trim()
+          ? discord.trim()
+          : null,
+      plan: plan_code,
+      status: "inactive",
+      expires_at: expires_at || null,
+      created_manually: false,
+      issued_by: "payment_system",
+      payment_required: true,
+      payment_status: "pending",
+      is_legacy: false,
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+
+    const { data: insertedLicense, error: licenseError } = await supabase
+      .from("licenses")
+      .insert(paidLicensePayload)
+      .select("id, license_key")
+      .single();
+
+    if (licenseError) throw licenseError;
+
+    const orderRef = generateOrderRef();
+
+    const { data: insertedOrder, error: orderError } = await supabase
+      .from("payment_orders")
+      .insert({
+        order_ref: orderRef,
+        customer_name: customer_name || null,
+        email,
+        discord:
+          typeof discord === "string" && discord.trim()
+            ? discord.trim()
+            : null,
+        phone: phone || null,
+        provider: "mamopay",
+        plan_code,
+        amount,
+        currency: currency || "AED",
+        status: "pending",
+        linked_license_id: insertedLicense.id,
+        auto_create_license: false,
+        metadata: {
+          license_key,
+          source: "admin_create_mamo_order"
+        },
+        created_at: nowIso,
+        updated_at: nowIso
+      })
+      .select("*")
+      .single();
+
+    if (orderError) throw orderError;
+
+    const mamoResult = await createMamoPaymentLink({
+      amount,
+      currency: currency || "AED",
+      description: `VoltechShield ${plan_code} license ${license_key}`,
+      customer_name: customer_name || "",
+      customer_email: email,
+      order_ref: orderRef
+    });
+
+    const providerOrderId =
+      mamoResult.id ||
+      mamoResult.link_id ||
+      mamoResult.payment_link_id ||
+      mamoResult.external_id ||
+      null;
+
+    const checkoutUrl =
+      mamoResult.checkout_url ||
+      mamoResult.url ||
+      mamoResult.payment_url ||
+      null;
+
+    const providerPaymentId =
+      mamoResult.payment_id ||
+      mamoResult.charge_id ||
+      null;
+
+    const { error: updateOrderError } = await supabase
+      .from("payment_orders")
+      .update({
+        provider_order_id: providerOrderId,
+        provider_payment_id: providerPaymentId,
+        provider_checkout_url: checkoutUrl,
+        payment_link: checkoutUrl,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", insertedOrder.id);
+
+    if (updateOrderError) throw updateOrderError;
+
+    return res.json({
+      success: true,
+      order_ref: orderRef,
+      license_key,
+      linked_license_id: insertedLicense.id,
+      provider_order_id: providerOrderId,
+      provider_payment_id: providerPaymentId,
+      checkout_url: checkoutUrl,
+      raw: mamoResult
+    });
+  } catch (err) {
+    console.error("Create Mamo order route error:", err);
+    return res.status(500).json({
+      error: "create_mamo_order_failed",
+      details: String(err.message || err)
+    });
+  }
+});
+
+app.post("/admin/payments/sync-mamo", requireAdmin, async (_req, res) => {
+  try {
+    const { data: pendingOrders, error: pendingError } = await supabase
+      .from("payment_orders")
+      .select("*")
+      .eq("provider", "mamopay")
+      .in("status", ["draft", "pending"]);
+
+    if (pendingError) throw pendingError;
+
+    const results = [];
+
+    for (const order of pendingOrders || []) {
+      try {
+        if (!order.provider_order_id) {
+          results.push({
+            order_ref: order.order_ref,
+            ok: false,
+            reason: "missing_provider_order_id"
+          });
+          continue;
+        }
+
+        const mamoStatus = await fetchMamoPaymentStatus(order.provider_order_id);
+
+        const rawStatus = String(
+          mamoStatus.status ||
+            mamoStatus.payment_status ||
+            mamoStatus.state ||
+            "unknown"
+        ).toLowerCase();
+
+        let nextOrderStatus = order.status;
+        let nextLicenseStatus = null;
+        let nextPaymentStatus = null;
+        let paidAt = null;
+
+        if (
+          rawStatus === "paid" ||
+          rawStatus === "captured" ||
+          rawStatus === "success" ||
+          rawStatus === "completed"
+        ) {
+          nextOrderStatus = "paid";
+          nextLicenseStatus = "active";
+          nextPaymentStatus = "paid";
+          paidAt = new Date().toISOString();
+        } else if (rawStatus === "failed") {
+          nextOrderStatus = "failed";
+          nextLicenseStatus = "inactive";
+          nextPaymentStatus = "failed";
+        } else if (rawStatus === "refunded") {
+          nextOrderStatus = "refunded";
+          nextLicenseStatus = "inactive";
+          nextPaymentStatus = "refunded";
+        } else if (rawStatus === "cancelled" || rawStatus === "canceled") {
+          nextOrderStatus = "cancelled";
+          nextLicenseStatus = "inactive";
+          nextPaymentStatus = "unpaid";
+        } else if (rawStatus === "expired") {
+          nextOrderStatus = "expired";
+          nextLicenseStatus = "inactive";
+          nextPaymentStatus = "unpaid";
+        }
+
+        const providerPaymentId =
+          mamoStatus.payment_id ||
+          mamoStatus.charge_id ||
+          order.provider_payment_id ||
+          null;
+
+        const providerCheckoutUrl =
+          mamoStatus.checkout_url ||
+          mamoStatus.url ||
+          order.provider_checkout_url ||
+          null;
+
+        const { error: updateOrderError } = await supabase
+          .from("payment_orders")
+          .update({
+            status: nextOrderStatus,
+            provider_payment_id: providerPaymentId,
+            provider_checkout_url: providerCheckoutUrl,
+            payment_link: providerCheckoutUrl,
+            paid_at: paidAt || order.paid_at,
+            last_checked_at: new Date().toISOString(),
+            metadata: {
+              ...(order.metadata || {}),
+              last_mamo_sync: mamoStatus
+            },
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", order.id);
+
+        if (updateOrderError) throw updateOrderError;
+
+        if (order.linked_license_id && nextLicenseStatus && nextPaymentStatus) {
+          const { data: linkedLicense, error: linkedLicenseError } =
+            await supabase
+              .from("licenses")
+              .select("id, is_legacy, plan, expires_at")
+              .eq("id", order.linked_license_id)
+              .single();
+
+          if (linkedLicenseError) throw linkedLicenseError;
+
+          const licenseUpdate = {
+            payment_status: nextPaymentStatus,
+            updated_at: new Date().toISOString()
+          };
+
+          if (linkedLicense.is_legacy !== true) {
+            licenseUpdate.status = nextLicenseStatus;
+          }
+
+          if (nextPaymentStatus === "paid") {
+            let newExpiry = linkedLicense.expires_at;
+
+            if (order.plan_code === "monthly") {
+              newExpiry = addDaysIso(newExpiry, 30);
+            } else if (order.plan_code === "6months") {
+              newExpiry = addDaysIso(newExpiry, 180);
+            } else if (order.plan_code === "yearly") {
+              newExpiry = addDaysIso(newExpiry, 365);
+            } else if (order.plan_code === "lifetime") {
+              newExpiry = null;
+            }
+
+            licenseUpdate.expires_at = newExpiry;
+            licenseUpdate.last_activated_at = new Date().toISOString();
+            licenseUpdate.source_order_id_text = order.provider_order_id || null;
+            licenseUpdate.source_payment_id_text = providerPaymentId || null;
+          }
+
+          const { error: updateLicenseError } = await supabase
+            .from("licenses")
+            .update(licenseUpdate)
+            .eq("id", order.linked_license_id);
+
+          if (updateLicenseError) throw updateLicenseError;
+        }
+
+        results.push({
+          order_ref: order.order_ref,
+          ok: true,
+          raw_status: rawStatus,
+          final_order_status: nextOrderStatus,
+          final_payment_status: nextPaymentStatus
+        });
+      } catch (innerErr) {
+        console.error("Sync order error:", order.order_ref, innerErr);
+        results.push({
+          order_ref: order.order_ref,
+          ok: false,
+          reason: String(innerErr.message || innerErr)
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      checked: results.length,
+      results
+    });
+  } catch (err) {
+    console.error("Sync Mamo route error:", err);
+    return res.status(500).json({
+      error: "sync_mamo_failed",
+      details: String(err.message || err)
+    });
   }
 });
 
