@@ -35,13 +35,6 @@ const supabase = createClient(
 const MAMO_BASE =
   (process.env.MAMO_API_BASE_URL || "https://business.mamopay.com/manage_api/v1").replace(/\/$/, "");
 
-// ─── ANNOUNCEMENT ─────────────────────────────────────────────────────────────
-const ANNOUNCEMENT = {
-  active: process.env.ANNOUNCEMENT_ACTIVE !== "false",
-  message:
-    process.env.ANNOUNCEMENT_MESSAGE ||
-    "أهلاً بضيوفنا الكرام، مرحباً بكم في الإصدار 1.0.2"
-};
 
 // ─── MIDDLEWARE ───────────────────────────────────────────────────────────────
 function requireAdmin(req, res, next) {
@@ -414,26 +407,51 @@ app.get("/version", (_req, res) => {
   });
 });
 
-app.get("/announcement", (_req, res) => {
-  return res.json({
-    active: Boolean(ANNOUNCEMENT.active),
-    message: ANNOUNCEMENT.active ? String(ANNOUNCEMENT.message || "") : ""
-  });
+
+// ─── ANNOUNCEMENT (Supabase-backed, survives redeploys) ──────────────────────
+const ANNOUNCEMENT_KEY = "announcement";
+const ANNOUNCEMENT_FALLBACK = { active: true, message: "u0623u0647u0644u0627u064b u0628u0636u064au0648u0641u0646u0627 u0627u0644u0643u0631u0627u0645u060c u0645u0631u062du0628u0627u064b u0628u0643u0645 u0641u064a u0627u0644u0625u0635u062fu0627u0631 1.0.2" };
+
+async function getAnnouncement() {
+  try {
+    const { data, error } = await supabase
+      .from("app_config")
+      .select("value")
+      .eq("key", ANNOUNCEMENT_KEY)
+      .single();
+    if (error || !data) return ANNOUNCEMENT_FALLBACK;
+    return { active: Boolean(data.value.active), message: String(data.value.message || "") };
+  } catch {
+    return ANNOUNCEMENT_FALLBACK;
+  }
+}
+
+async function setAnnouncement(active, message) {
+  const value = { active: Boolean(active), message: typeof message === "string" ? message.trim() : "" };
+  await supabase.from("app_config").upsert(
+    { key: ANNOUNCEMENT_KEY, value, updated_at: new Date().toISOString() },
+    { onConflict: "key" }
+  );
+  return value;
+}
+
+app.get("/announcement", async (_req, res) => {
+  const ann = await getAnnouncement();
+  return res.json({ active: ann.active, message: ann.active ? ann.message : "" });
 });
 
-app.post("/admin/announcement", requireAdmin, (req, res) => {
-  const { active, message } = req.body;
-  ANNOUNCEMENT.active = Boolean(active);
-  ANNOUNCEMENT.message = typeof message === "string" ? message.trim() : "";
-  console.log(
-    `Announcement updated: active=${ANNOUNCEMENT.active} message="${ANNOUNCEMENT.message}"`
-  );
-  return res.json({
-    success: true,
-    active: ANNOUNCEMENT.active,
-    message: ANNOUNCEMENT.message
-  });
+app.post("/admin/announcement", requireAdmin, async (req, res) => {
+  try {
+    const { active, message } = req.body;
+    const ann = await setAnnouncement(active, message);
+    console.log(`Announcement updated: active=${ann.active} message="${ann.message}"`);
+    return res.json({ success: true, active: ann.active, message: ann.message });
+  } catch (err) {
+    console.error("Announcement update error:", err);
+    return res.status(500).json({ error: "announcement_update_failed" });
+  }
 });
+
 
 // ─── ACTIVATE ─────────────────────────────────────────────────────────────────
 app.post("/activate", async (req, res) => {
