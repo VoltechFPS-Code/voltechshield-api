@@ -372,6 +372,16 @@ function startSyncCron() {
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 
+// TEMPORARY DEBUG
+app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) => {
+  try {
+    const data = await fetchMamoSubscriptionPayments(req.params.subscriptionId, null);
+    return res.json(data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/", (_req, res) => {
   return res.json({ ok: true, service: "voltechshield-api", status: "online" });
 });
