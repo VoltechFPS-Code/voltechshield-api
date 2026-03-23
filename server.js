@@ -1260,3 +1260,12 @@ app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
   startSyncCron();
 });
+
+app.get("/debug-env", requireAdmin, (_req, res) => {
+  return res.json({
+    has_mamo_key: Boolean(process.env.MAMO_API_KEY),
+    has_mamo_url: Boolean(process.env.MAMO_API_BASE_URL),
+    mamo_url_value: process.env.MAMO_API_BASE_URL || null,
+    all_mamo_keys: Object.keys(process.env).filter(k => k.includes("MAMO"))
+  });
+});
