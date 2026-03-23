@@ -256,11 +256,11 @@ async function runSubscriptionSync() {
 
       const paymentsData = await fetchMamoSubscriptionPayments(
         sub.provider_subscription_id,
-        sub.email || null
+        null
       );
 
       const { subStatus, licenseStatus, paymentStatus, latestPayment } =
-        resolveSubscriptionStatus(paymentsData, sub.email || null);
+        resolveSubscriptionStatus(paymentsData, null);
 
       const nowIso = new Date().toISOString();
 
@@ -963,8 +963,8 @@ app.post("/admin/subscriptions/create", requireAdmin, async (req, res) => {
     // 4. Immediate sync for this subscription only
     let syncResult = null;
     try {
-      const paymentsData = await fetchMamoSubscriptionPayments(provider_subscription_id, email);
-      const resolved = resolveSubscriptionStatus(paymentsData, email);
+      const paymentsData = await fetchMamoSubscriptionPayments(provider_subscription_id, null);
+      const resolved = resolveSubscriptionStatus(paymentsData, null);
       syncResult = resolved;
 
       await supabase
@@ -1259,13 +1259,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Voltech Shield license server running on port ${PORT}`);
   startSyncCron();
-});
-
-app.get("/debug-env", requireAdmin, (_req, res) => {
-  return res.json({
-    has_mamo_key: Boolean(process.env.MAMO_API_KEY),
-    has_mamo_url: Boolean(process.env.MAMO_API_BASE_URL),
-    mamo_url_value: process.env.MAMO_API_BASE_URL || null,
-    all_mamo_keys: Object.keys(process.env).filter(k => k.includes("MAMO"))
-  });
 });
