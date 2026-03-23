@@ -212,9 +212,19 @@ function resolveSubscriptionStatus(paymentsData, email = null) {
     return { subStatus: "incomplete", licenseStatus: "inactive", paymentStatus: "pending", latestPayment: null };
   }
 
-  // Sort descending by created_at
+  // Mamo uses created_date in format "2026-03-23-00-03-23" (not standard ISO)
+  function parseMamoDate(d) {
+    if (!d) return 0;
+    const parts = String(d).split("-");
+    if (parts.length === 6) {
+      return new Date(`${parts[0]}-${parts[1]}-${parts[2]}T${parts[3]}:${parts[4]}:${parts[5]}`).getTime();
+    }
+    return new Date(d).getTime() || 0;
+  }
+
+  // Sort descending by created_date (newest first)
   const sorted = [...relevant].sort(
-    (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    (a, b) => parseMamoDate(b.created_date || b.created_at) - parseMamoDate(a.created_date || a.created_at)
   );
 
   const latest = sorted[0];
