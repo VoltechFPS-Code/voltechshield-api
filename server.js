@@ -400,10 +400,10 @@ app.get("/health", (_req, res) => {
 
 app.get("/version", (_req, res) => {
   return res.json({
-    version: "2.0.0",
+    version: "2.0.1",
     notes:
       "تعال واكتشف التطبيق الجديد",
-    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.0/VoltechShield_2.0.0_x64-setup.exe"
+    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.1/VoltechShield_2.0.1_x64-setup.exe"
   });
 });
 
