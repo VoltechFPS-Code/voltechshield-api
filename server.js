@@ -400,17 +400,17 @@ app.get("/health", (_req, res) => {
 
 app.get("/version", (_req, res) => {
   return res.json({
-    version: "1.0.2",
+    version: "2.0.0",
     notes:
-      "OBS Tutorial, Public Announcements, GPU Driver Polling, Nvidia App Warning, Single Instance Guard, Arabic Toggle, Reshuffled UI",
-    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v1.0.2/VoltechShield_1.0.2_x64-setup.exe"
+      "تعال واكتشف التطبيق الجديد",
+    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.0/VoltechShield_2.0.0_x64-setup.exe"
   });
 });
 
 
 // ─── ANNOUNCEMENT (Supabase-backed, survives redeploys) ──────────────────────
 const ANNOUNCEMENT_KEY = "announcement";
-const ANNOUNCEMENT_FALLBACK = { active: true, message: "u0623u0647u0644u0627u064b u0628u0636u064au0648u0641u0646u0627 u0627u0644u0643u0631u0627u0645u060c u0645u0631u062du0628u0627u064b u0628u0643u0645 u0641u064a u0627u0644u0625u0635u062fu0627u0631 1.0.2" };
+const ANNOUNCEMENT_FALLBACK = { active: true, message: "" };
 
 async function getAnnouncement() {
   try {
