@@ -214,27 +214,54 @@ Return only this JSON:
 {"status":"outdated" or "up-to-date" or "unknown","latest":"xxx.xx","download_url":"https://...","note":"short explanation"}
 `.trim();
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        tools: [{ googleSearch: {} }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0.05 }
-      })
+  const MAX_RETRIES = 3;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await new Promise(r => setTimeout(r, attempt * 4000)); // 4s, then 8s
+      console.log(`[gemini] Retry attempt ${attempt} for ${gpu_name}`);
     }
-  );
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Gemini HTTP ${response.status} // ${text}`);
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 30000); // 30s hard timeout
+
+    let response;
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            tools: [{ googleSearch: {} }],
+            generationConfig: { responseMimeType: "application/json", temperature: 0.05 }
+          })
+        }
+      );
+    } finally {
+      clearTimeout(fetchTimeout);
+    }
+
+    // Retry on 503 (overloaded) or 429 (rate limit)
+    if (response.status === 503 || response.status === 429) {
+      const text = await response.text();
+      console.warn(`[gemini] ${response.status} on attempt ${attempt + 1}: ${text.slice(0, 120)}`);
+      if (attempt < MAX_RETRIES - 1) continue;
+      throw new Error(`Gemini HTTP ${response.status} after ${MAX_RETRIES} attempts`);
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Gemini HTTP ${response.status} // ${text}`);
+    }
+
+    const data = await response.json();
+    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
+    return sanitizeDriverResult(jsonFromGeminiText(text));
   }
 
-  const data = await response.json();
-  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
-  return sanitizeDriverResult(jsonFromGeminiText(text));
+  throw new Error("Gemini retry loop exhausted");
 }
 
 // ─── MAMO HELPERS ─────────────────────────────────────────────────────────────
