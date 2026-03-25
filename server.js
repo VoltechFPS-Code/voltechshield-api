@@ -356,9 +356,28 @@ app.post("/report-gpu", async (req, res) => {
       }
     } catch (geminiError) { console.error("Gemini lookup error:", geminiError); }
     if (suggested) {
-      await supabase.from("licenses").update({ suggested_driver_status: suggested.status || null, suggested_driver_latest: suggested.latest || null, suggested_driver_download_url: suggested.download_url || null, suggested_driver_checked_at: new Date().toISOString(), driver_note: licenseRow.driver_note || suggested.note || null, updated_at: new Date().toISOString() }).eq("license_key", license);
+      await supabase.from("licenses").update({ suggested_driver_status: finalStatus || null, suggested_driver_latest: suggested.latest || null, suggested_driver_download_url: suggested.download_url || null, suggested_driver_checked_at: new Date().toISOString(), driver_note: licenseRow.driver_note || suggested.note || null, updated_at: new Date().toISOString() }).eq("license_key", license);
     }
-    const refreshed = { ...licenseRow, suggested_driver_status: suggested?.status || licenseRow.suggested_driver_status || null, suggested_driver_latest: suggested?.latest || licenseRow.suggested_driver_latest || null, suggested_driver_download_url: suggested?.download_url || licenseRow.suggested_driver_download_url || null, driver_note: licenseRow.driver_note || suggested?.note || null };
+    // Sanity-check Gemini's status against a direct version comparison.
+    // Gemini sometimes returns "outdated" in the status field while its own
+    // note and latest field confirm the driver is current — contradictory.
+    // If installed version matches Gemini's latest, force "up-to-date".
+    let finalStatus = suggested?.status || licenseRow.suggested_driver_status || null;
+    if (finalStatus === "outdated" && suggested?.latest) {
+      const normalize = (v) => String(v || "").trim().replace(/\s+/g, "").toLowerCase();
+      if (normalize(gpu_driver_version) === normalize(suggested.latest)) {
+        finalStatus = "up-to-date";
+        console.log(`[driver] Overriding Gemini status: installed ${gpu_driver_version} === latest ${suggested.latest} -> up-to-date`);
+      }
+    }
+
+    const refreshed = {
+      ...licenseRow,
+      suggested_driver_status: finalStatus,
+      suggested_driver_latest: suggested?.latest || licenseRow.suggested_driver_latest || null,
+      suggested_driver_download_url: suggested?.download_url || licenseRow.suggested_driver_download_url || null,
+      driver_note: licenseRow.driver_note || suggested?.note || null
+    };
     const preferredUrl = refreshed.approved_driver_download_url || refreshed.suggested_driver_download_url || null;
     const preferredLatest = refreshed.approved_driver_latest || refreshed.suggested_driver_latest || null;
     const effectiveStatus = refreshed.suggested_driver_status || "unknown";
