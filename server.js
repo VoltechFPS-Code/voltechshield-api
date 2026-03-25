@@ -5,6 +5,7 @@ const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
+app.set('trust proxy', 1); // Render sits behind a proxy — trust X-Forwarded-For
 
 app.use(cors());
 app.use(express.json());
@@ -323,6 +324,7 @@ app.post("/admin/announcement", requireAdmin, (req, res) => {
 app.post("/activate", async (req, res) => {
   try {
     const { license, hwid, app_version } = req.body;
+    const last_ip = req.ip || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || null;
 
     if (!license || !hwid) {
       return res.json({ valid: false, reason: "missing_fields" });
@@ -339,7 +341,8 @@ app.post("/activate", async (req, res) => {
         license_key: license,
         hwid,
         result: "license_not_found",
-        app_version: app_version || null
+        app_version: app_version || null,
+        ip: last_ip
       });
 
       return res.json({ valid: false, reason: "license_not_found" });
@@ -352,7 +355,8 @@ app.post("/activate", async (req, res) => {
         license_key: license,
         hwid,
         result: "inactive",
-        app_version: app_version || null
+        app_version: app_version || null,
+        ip: last_ip
       });
 
       return res.json({
@@ -367,7 +371,8 @@ app.post("/activate", async (req, res) => {
         license_key: license,
         hwid,
         result: "expired",
-        app_version: app_version || null
+        app_version: app_version || null,
+        ip: last_ip
       });
 
       return res.json({
@@ -382,6 +387,7 @@ app.post("/activate", async (req, res) => {
         .from("licenses")
         .update({
           hwid,
+          last_ip,
           last_validated_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         })
@@ -392,7 +398,8 @@ app.post("/activate", async (req, res) => {
           license_key: license,
           hwid,
           result: "bind_failed",
-          app_version: app_version || null
+          app_version: app_version || null,
+          ip: last_ip
         });
 
         return res.json({
@@ -406,7 +413,8 @@ app.post("/activate", async (req, res) => {
         license_key: license,
         hwid,
         result: "first_activation_success",
-        app_version: app_version || null
+        app_version: app_version || null,
+        ip: last_ip
       });
 
       return res.json({
@@ -421,7 +429,8 @@ app.post("/activate", async (req, res) => {
         license_key: license,
         hwid,
         result: "hwid_mismatch",
-        app_version: app_version || null
+        app_version: app_version || null,
+        ip: last_ip
       });
 
       return res.json({
@@ -434,6 +443,7 @@ app.post("/activate", async (req, res) => {
     await supabase
       .from("licenses")
       .update({
+        last_ip,
         last_validated_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       })
@@ -443,7 +453,8 @@ app.post("/activate", async (req, res) => {
       license_key: license,
       hwid,
       result: "validation_success",
-      app_version: app_version || null
+      app_version: app_version || null,
+      ip: last_ip
     });
 
     return res.json({
