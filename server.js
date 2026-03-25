@@ -268,7 +268,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "2.0.2", notes: "Version 2.0.2", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.2/VoltechShield_2.0.2_x64-setup.exe" }));
+app.get("/version", (_req, res) => res.json({ version: "2.0.1", notes: "تعال واكتشف التطبيب الجديد", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.1/VoltechShield_2.0.1_x64-setup.exe" }));
 
 // ─── ANNOUNCEMENT ────────────────────────────────────────────────────────────
 const ANNOUNCEMENT_KEY = "announcement";
@@ -361,7 +361,8 @@ app.post("/report-gpu", async (req, res) => {
     const refreshed = { ...licenseRow, suggested_driver_status: suggested?.status || licenseRow.suggested_driver_status || null, suggested_driver_latest: suggested?.latest || licenseRow.suggested_driver_latest || null, suggested_driver_download_url: suggested?.download_url || licenseRow.suggested_driver_download_url || null, driver_note: licenseRow.driver_note || suggested?.note || null };
     const preferredUrl = refreshed.approved_driver_download_url || refreshed.suggested_driver_download_url || null;
     const preferredLatest = refreshed.approved_driver_latest || refreshed.suggested_driver_latest || null;
-    const driverUpdateAvailable = Boolean(preferredUrl) && (Boolean(refreshed.approved_driver_download_url) || refreshed.suggested_driver_status === "outdated");
+    const effectiveStatus = refreshed.suggested_driver_status || "unknown";
+    const driverUpdateAvailable = Boolean(preferredUrl) && effectiveStatus === "outdated";
     return res.json({ ok: true, gpu_name, gpu_driver_version, driver_update_available: driverUpdateAvailable, driver_download_url: preferredUrl, driver_note: refreshed.driver_note || null, driver_latest_version: preferredLatest, driver_status: refreshed.suggested_driver_status || "unknown" });
   } catch (err) { console.error("Report GPU route error:", err); return res.status(500).json({ ok: false, reason: "server_error" }); }
 });
