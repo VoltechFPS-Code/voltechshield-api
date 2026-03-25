@@ -268,7 +268,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "2.0.1", notes: "تعال واكتشف التطبيب الجديد", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.1/VoltechShield_2.0.1_x64-setup.exe" }));
+app.get("/version", (_req, res) => res.json({ version: "2.0.2", notes: "Version 2.0.2", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.2/VoltechShield_2.0.2_x64-setup.exe" }));
 
 // ─── ANNOUNCEMENT ────────────────────────────────────────────────────────────
 const ANNOUNCEMENT_KEY = "announcement";
