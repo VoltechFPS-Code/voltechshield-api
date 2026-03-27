@@ -233,12 +233,19 @@ function resolveSubscriptionStatus(paymentsData, email = null) {
     ? paymentsData
     : paymentsData?.results || paymentsData?.payments || paymentsData?.data || [];
 
-  const relevant = email
-    ? list.filter(p => (p.email || p.customer_email || "").toLowerCase() === email.toLowerCase())
+  // Filter by email to isolate this customer's payments from the shared subscription pool
+  // Fall back to full list if no email match found — prevents false incomplete status
+  let relevant = email
+    ? list.filter(p => (p.customer_email || p.email || "").toLowerCase() === email.toLowerCase())
     : list;
 
+  if (!relevant.length && email) {
+    console.warn(`[sync] No payments matched email "${email}" — falling back to full payment list (${list.length} payments)`);
+    relevant = list;
+  }
+
   if (!relevant.length) {
-    return { subStatus: "incomplete", licenseStatus: "inactive", paymentStatus: "pending", latestPayment: null };
+    return { subStatus: "incomplete", licenseStatus: null, paymentStatus: null, latestPayment: null };
   }
 
   // Mamo uses created_date in format "2026-03-23-00-03-23" (not standard ISO)
@@ -857,12 +864,7 @@ app.post("/admin/subscriptions/create", requireAdmin, async (req, res) => {
       return res.status(404).json({ error: "license_not_found" });
     }
 
-    if (licenseRow.is_legacy === true) {
-      return res.status(400).json({
-        error: "license_is_legacy",
-        message: "Cannot link a subscription to a legacy/manual license. Set is_legacy=false first."
-      });
-    }
+    // If license is legacy, we'll flip it to non-legacy when linking the subscription
 
     const nowIso = new Date().toISOString();
     const subscriptionRef = generateSubRef();
@@ -880,9 +882,10 @@ app.post("/admin/subscriptions/create", requireAdmin, async (req, res) => {
 
     const { error: linkError } = await supabase.from("licenses").update({
       linked_subscription_ref: subscriptionRef,
+      is_legacy: false,         // flip legacy flag when linking a subscription
       payment_required: true,
       payment_status: "pending",
-      expires_at: null, // Mamo controls access — no hard expiry for subscription licenses
+      expires_at: null,         // Mamo controls access — no hard expiry for subscription licenses
       updated_at: nowIso
     }).eq("license_key", license_key);
 
