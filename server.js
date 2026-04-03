@@ -402,9 +402,9 @@ app.get("/health", (_req, res) => {
 
 app.get("/version", (_req, res) => {
   return res.json({
-    version: "2.0.3",
-    notes: "بناءً على طلب المستخدمين، تم تحديث التطبيق ليتيح تخصيص حجم النافذة، وخيارات أكثر مرونة لمفاتيح اختصار تسجيل المقاطع داخل اللعبة",
-    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.3/VoltechShield_2.0.3_x64-setup.exe"
+    version: "2.0.4",
+    notes: "Small Bug Fixes and UI Refinement",
+    url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.4/VoltechShield_2.0.4_x64-setup.exe"
   });
 });
 
