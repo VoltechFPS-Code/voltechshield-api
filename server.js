@@ -170,7 +170,7 @@ Return only this JSON:
         body: JSON.stringify({
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           tools: [{ googleSearch: {} }],
-          generationConfig: { responseMimeType: "application/json", temperature: 0.05 }
+          generationConfig: { temperature: 0.05 }
         })
       }
     );
