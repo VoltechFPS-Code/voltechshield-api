@@ -325,7 +325,7 @@ app.post("/activate", async (req, res) => {
         return res.json({ valid: false, reason: "bind_failed", ...maintenanceFlags });
       }
       await supabase.from("activations").insert({ license_key: license, hwid, result: "first_activation_success", app_version: app_version || null, ip: last_ip });
-      return res.json({ valid: true, reason: "first_activation_success", ...maintenanceFlags });
+      return res.json({ valid: true, reason: "first_activation_success", discord: licenseRow.discord || null, ...maintenanceFlags });
     }
     if (licenseRow.hwid !== hwid) {
       await supabase.from("activations").insert({ license_key: license, hwid, result: "hwid_mismatch", app_version: app_version || null, ip: last_ip });
@@ -333,7 +333,7 @@ app.post("/activate", async (req, res) => {
     }
     await supabase.from("licenses").update({ last_ip, last_validated_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("license_key", license);
     await supabase.from("activations").insert({ license_key: license, hwid, result: "validation_success", app_version: app_version || null, ip: last_ip });
-    return res.json({ valid: true, reason: "validation_success", ...maintenanceFlags });
+    return res.json({ valid: true, reason: "validation_success", discord: licenseRow.discord || null, ...maintenanceFlags });
   } catch (err) { console.error("Activation route error:", err); return res.status(500).json({ valid: false, reason: "server_error" }); }
 });
 
