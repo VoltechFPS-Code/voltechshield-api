@@ -199,47 +199,109 @@ async function fetchMamoSubscriptionPayments(providerSubscriptionId, email = nul
   try { return JSON.parse(text); } catch { throw new Error(`Mamo non-JSON: ${text}`); }
 }
 
-function resolveSubscriptionStatus(paymentsData, email = null) {
-  const list = Array.isArray(paymentsData)
-    ? paymentsData
-    : paymentsData?.results || paymentsData?.payments || paymentsData?.data || [];
+function resolveSubscriptionStatus(data, email = null) {
+  const list = Array.isArray(data)
+    ? data
+    : data?.results || data?.payments || data?.data || [];
 
-  const getEmail = (p) =>
-    (p.email || p.customer_email || p.customer_details?.email || "").toLowerCase();
+  const norm = (v) => String(v || "").trim().toLowerCase();
+
+  const getEmail = (item) =>
+    norm(
+      item.email ||
+      item.customer_email ||
+      item.customer_details?.email ||
+      item.customer?.email
+    );
 
   const relevant = email
-    ? list.filter(p => getEmail(p) === email.toLowerCase())
+    ? list.filter(item => getEmail(item) === norm(email))
     : list;
 
   if (!relevant.length) {
-    return { subStatus: "incomplete", licenseStatus: "inactive", paymentStatus: "pending", latestPayment: null };
+    return {
+      subStatus: "incomplete",
+      licenseStatus: "inactive",
+      paymentStatus: "pending",
+      latestPayment: null
+    };
   }
 
-  function parseMamoDate(d) {
+  function parseMamoDate(item) {
+    const d =
+      item.created_date ||
+      item.created_at ||
+      item.next_payment_date ||
+      null;
+
     if (!d) return 0;
+
     const parts = String(d).split("-");
     if (parts.length === 6) {
       return new Date(`${parts[0]}-${parts[1]}-${parts[2]}T${parts[3]}:${parts[4]}:${parts[5]}`).getTime();
     }
-    return new Date(d).getTime() || 0;
+
+    const t = new Date(d).getTime();
+    return Number.isFinite(t) ? t : 0;
   }
 
-  const sorted = [...relevant].sort(
-    (a, b) => parseMamoDate(b.created_date || b.created_at) - parseMamoDate(a.created_date || a.created_at)
-  );
-
+  const sorted = [...relevant].sort((a, b) => parseMamoDate(b) - parseMamoDate(a));
   const latest = sorted[0];
-  const rawStatus = String(latest.status || "unknown").toLowerCase();
+  const rawStatus = norm(latest.status);
 
+  // subscriber-style statuses from Mamo docs
+  if (["active"].includes(rawStatus)) {
+    return {
+      subStatus: "active",
+      licenseStatus: "active",
+      paymentStatus: "paid",
+      latestPayment: latest
+    };
+  }
+
+  if (["paused"].includes(rawStatus)) {
+    return {
+      subStatus: "past_due",
+      licenseStatus: "inactive",
+      paymentStatus: "failed",
+      latestPayment: latest
+    };
+  }
+
+  if (["cancelled", "canceled", "inactive", "disabled"].includes(rawStatus)) {
+    return {
+      subStatus: "past_due",
+      licenseStatus: "inactive",
+      paymentStatus: "failed",
+      latestPayment: latest
+    };
+  }
+
+  // payment-style statuses
   if (["captured", "paid", "success", "completed", "settled"].includes(rawStatus)) {
-    return { subStatus: "active", licenseStatus: "active", paymentStatus: "paid", latestPayment: latest };
+    return {
+      subStatus: "active",
+      licenseStatus: "active",
+      paymentStatus: "paid",
+      latestPayment: latest
+    };
   }
 
-  if (["failed", "declined", "cancelled", "canceled", "refunded", "expired", "reversed"].includes(rawStatus)) {
-    return { subStatus: "past_due", licenseStatus: "inactive", paymentStatus: "failed", latestPayment: latest };
+  if (["failed", "declined", "refunded", "expired", "reversed"].includes(rawStatus)) {
+    return {
+      subStatus: "past_due",
+      licenseStatus: "inactive",
+      paymentStatus: "failed",
+      latestPayment: latest
+    };
   }
 
-  return { subStatus: "pending", licenseStatus: null, paymentStatus: null, latestPayment: latest };
+  return {
+    subStatus: "pending",
+    licenseStatus: null,
+    paymentStatus: null,
+    latestPayment: latest
+  };
 }
 
 async function runSubscriptionSync() {
