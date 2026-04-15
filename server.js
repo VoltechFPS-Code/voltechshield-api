@@ -224,8 +224,8 @@ async function runSubscriptionSync() {
   for (const sub of subs || []) {
     try {
       if (!sub.provider_subscription_id) { results.push({ ref: sub.subscription_ref, ok: false, reason: "missing_provider_subscription_id" }); continue; }
-      const paymentsData = await fetchMamoSubscriptionPayments(sub.provider_subscription_id, null);
-      const { subStatus, licenseStatus, paymentStatus, latestPayment } = resolveSubscriptionStatus(paymentsData, null);
+      const paymentsData = await fetchMamoSubscriptionPayments(sub.provider_subscription_id, sub.email);
+      const { subStatus, licenseStatus, paymentStatus, latestPayment } = resolveSubscriptionStatus(paymentsData, sub.email);
       const nowIso = new Date().toISOString();
       await supabase.from("payment_subscriptions").update({ status: subStatus, latest_payment_status: latestPayment ? String(latestPayment.status || "unknown").toLowerCase() : sub.latest_payment_status, latest_payment_at: latestPayment?.created_at || sub.latest_payment_at, last_checked_at: nowIso, metadata: { ...(sub.metadata || {}), last_mamo_sync: paymentsData }, updated_at: nowIso }).eq("id", sub.id);
       if (sub.linked_license_id && licenseStatus && paymentStatus) {
@@ -506,8 +506,8 @@ app.post("/admin/subscriptions/create", requireAdmin, async (req, res) => {
     await supabase.from("licenses").update({ linked_subscription_ref: subscriptionRef, payment_required: true, payment_status: "pending", updated_at: nowIso }).eq("license_key", license_key);
     let syncResult = null;
     try {
-      const paymentsData = await fetchMamoSubscriptionPayments(provider_subscription_id, null);
-      const resolved = resolveSubscriptionStatus(paymentsData, null);
+      const paymentsData = await fetchMamoSubscriptionPayments(provider_subscription_id, email);
+      const resolved = resolveSubscriptionStatus(paymentsData, email);
       syncResult = resolved;
       await supabase.from("payment_subscriptions").update({ status: resolved.subStatus, latest_payment_status: resolved.latestPayment ? String(resolved.latestPayment.status || "unknown").toLowerCase() : null, latest_payment_at: resolved.latestPayment?.created_at || null, last_checked_at: nowIso, updated_at: nowIso }).eq("subscription_ref", subscriptionRef);
       if (resolved.licenseStatus && resolved.paymentStatus) await supabase.from("licenses").update({ status: resolved.licenseStatus, payment_status: resolved.paymentStatus, updated_at: nowIso }).eq("license_key", license_key);
