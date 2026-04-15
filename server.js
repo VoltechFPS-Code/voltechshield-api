@@ -200,20 +200,45 @@ async function fetchMamoSubscriptionPayments(providerSubscriptionId, email = nul
 }
 
 function resolveSubscriptionStatus(paymentsData, email = null) {
-  const list = Array.isArray(paymentsData) ? paymentsData : paymentsData?.results || paymentsData?.payments || paymentsData?.data || [];
-  const relevant = email ? list.filter(p => (p.email || p.customer_email || "").toLowerCase() === email.toLowerCase()) : list;
-  if (!relevant.length) return { subStatus: "incomplete", licenseStatus: "inactive", paymentStatus: "pending", latestPayment: null };
+  const list = Array.isArray(paymentsData)
+    ? paymentsData
+    : paymentsData?.results || paymentsData?.payments || paymentsData?.data || [];
+
+  const getEmail = (p) =>
+    (p.email || p.customer_email || p.customer_details?.email || "").toLowerCase();
+
+  const relevant = email
+    ? list.filter(p => getEmail(p) === email.toLowerCase())
+    : list;
+
+  if (!relevant.length) {
+    return { subStatus: "incomplete", licenseStatus: "inactive", paymentStatus: "pending", latestPayment: null };
+  }
+
   function parseMamoDate(d) {
     if (!d) return 0;
     const parts = String(d).split("-");
-    if (parts.length === 6) return new Date(`${parts[0]}-${parts[1]}-${parts[2]}T${parts[3]}:${parts[4]}:${parts[5]}`).getTime();
+    if (parts.length === 6) {
+      return new Date(`${parts[0]}-${parts[1]}-${parts[2]}T${parts[3]}:${parts[4]}:${parts[5]}`).getTime();
+    }
     return new Date(d).getTime() || 0;
   }
-  const sorted = [...relevant].sort((a, b) => parseMamoDate(b.created_date || b.created_at) - parseMamoDate(a.created_date || a.created_at));
+
+  const sorted = [...relevant].sort(
+    (a, b) => parseMamoDate(b.created_date || b.created_at) - parseMamoDate(a.created_date || a.created_at)
+  );
+
   const latest = sorted[0];
   const rawStatus = String(latest.status || "unknown").toLowerCase();
-  if (["captured","paid","success","completed","settled"].includes(rawStatus)) return { subStatus: "active", licenseStatus: "active", paymentStatus: "paid", latestPayment: latest };
-  if (["failed","declined","cancelled","canceled","refunded","expired","reversed"].includes(rawStatus)) return { subStatus: "past_due", licenseStatus: "inactive", paymentStatus: "failed", latestPayment: latest };
+
+  if (["captured", "paid", "success", "completed", "settled"].includes(rawStatus)) {
+    return { subStatus: "active", licenseStatus: "active", paymentStatus: "paid", latestPayment: latest };
+  }
+
+  if (["failed", "declined", "cancelled", "canceled", "refunded", "expired", "reversed"].includes(rawStatus)) {
+    return { subStatus: "past_due", licenseStatus: "inactive", paymentStatus: "failed", latestPayment: latest };
+  }
+
   return { subStatus: "pending", licenseStatus: null, paymentStatus: null, latestPayment: latest };
 }
 
