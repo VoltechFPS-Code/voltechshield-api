@@ -157,7 +157,7 @@ Return only this JSON:
 `.trim();
 
   const controller = new AbortController();
-  const fetchTimeout = setTimeout(() => controller.abort(), 60000);
+  const fetchTimeout = setTimeout(() => controller.abort(), 30000);
 
   let response;
   try {
@@ -325,7 +325,7 @@ app.post("/activate", async (req, res) => {
         return res.json({ valid: false, reason: "bind_failed", ...maintenanceFlags });
       }
       await supabase.from("activations").insert({ license_key: license, hwid, result: "first_activation_success", app_version: app_version || null, ip: last_ip });
-      return res.json({ valid: true, reason: "first_activation_success", discord: licenseRow.discord || null, ...maintenanceFlags });
+      return res.json({ valid: true, reason: "first_activation_success", ...maintenanceFlags });
     }
     if (licenseRow.hwid !== hwid) {
       await supabase.from("activations").insert({ license_key: license, hwid, result: "hwid_mismatch", app_version: app_version || null, ip: last_ip });
@@ -333,7 +333,7 @@ app.post("/activate", async (req, res) => {
     }
     await supabase.from("licenses").update({ last_ip, last_validated_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("license_key", license);
     await supabase.from("activations").insert({ license_key: license, hwid, result: "validation_success", app_version: app_version || null, ip: last_ip });
-    return res.json({ valid: true, reason: "validation_success", discord: licenseRow.discord || null, ...maintenanceFlags });
+    return res.json({ valid: true, reason: "validation_success", ...maintenanceFlags });
   } catch (err) { console.error("Activation route error:", err); return res.status(500).json({ valid: false, reason: "server_error" }); }
 });
 
@@ -345,9 +345,7 @@ app.post("/report-gpu", async (req, res) => {
     const { data: licenseRow, error: licenseError } = await supabase.from("licenses").select("*").eq("license_key", license).single();
     if (licenseError || !licenseRow) return res.status(404).json({ ok: false, reason: "license_not_found" });
     if (licenseRow.hwid && licenseRow.hwid !== hwid) return res.status(403).json({ ok: false, reason: "hwid_mismatch" });
-
     await supabase.from("licenses").update({ gpu_name, gpu_driver_version, gpu_raw_driver_version: gpu_raw_driver_version || null, gpu_is_laptop: Boolean(gpu_is_laptop), gpu_brand: gpu_brand || null, cpu_brand: cpu_brand || null, last_gpu_reported_at: reported_at || new Date().toISOString(), updated_at: new Date().toISOString() }).eq("license_key", license);
-
     let suggested = null;
     try {
       const isNvidia = gpu_brand === "NVIDIA" || gpu_name.toLowerCase().includes("nvidia");
@@ -357,8 +355,13 @@ app.post("/report-gpu", async (req, res) => {
         console.log("Gemini suggested result:", suggested);
       }
     } catch (geminiError) { console.error("Gemini lookup error:", geminiError); }
-
-    // Sanity-check: if installed version matches Gemini's latest, force up-to-date
+    if (suggested) {
+      await supabase.from("licenses").update({ suggested_driver_status: finalStatus || null, suggested_driver_latest: suggested.latest || null, suggested_driver_download_url: suggested.download_url || null, suggested_driver_checked_at: new Date().toISOString(), driver_note: licenseRow.driver_note || suggested.note || null, updated_at: new Date().toISOString() }).eq("license_key", license);
+    }
+    // Sanity-check Gemini's status against a direct version comparison.
+    // Gemini sometimes returns "outdated" in the status field while its own
+    // note and latest field confirm the driver is current — contradictory.
+    // If installed version matches Gemini's latest, force "up-to-date".
     let finalStatus = suggested?.status || licenseRow.suggested_driver_status || null;
     if (finalStatus === "outdated" && suggested?.latest) {
       const normalize = (v) => String(v || "").trim().replace(/\s+/g, "").toLowerCase();
@@ -366,10 +369,6 @@ app.post("/report-gpu", async (req, res) => {
         finalStatus = "up-to-date";
         console.log(`[driver] Overriding Gemini status: installed ${gpu_driver_version} === latest ${suggested.latest} -> up-to-date`);
       }
-    }
-
-    if (suggested) {
-      await supabase.from("licenses").update({ suggested_driver_status: finalStatus || null, suggested_driver_latest: suggested.latest || null, suggested_driver_download_url: suggested.download_url || null, suggested_driver_checked_at: new Date().toISOString(), driver_note: licenseRow.driver_note || suggested.note || null, updated_at: new Date().toISOString() }).eq("license_key", license);
     }
 
     const refreshed = {
@@ -381,8 +380,9 @@ app.post("/report-gpu", async (req, res) => {
     };
     const preferredUrl = refreshed.approved_driver_download_url || refreshed.suggested_driver_download_url || null;
     const preferredLatest = refreshed.approved_driver_latest || refreshed.suggested_driver_latest || null;
-    const driverUpdateAvailable = Boolean(preferredUrl) && finalStatus === "outdated";
-    return res.json({ ok: true, gpu_name, gpu_driver_version, driver_update_available: driverUpdateAvailable, driver_download_url: preferredUrl, driver_note: refreshed.driver_note || null, driver_latest_version: preferredLatest, driver_status: finalStatus || "unknown" });
+    const effectiveStatus = refreshed.suggested_driver_status || "unknown";
+    const driverUpdateAvailable = Boolean(preferredUrl) && effectiveStatus === "outdated";
+    return res.json({ ok: true, gpu_name, gpu_driver_version, driver_update_available: driverUpdateAvailable, driver_download_url: preferredUrl, driver_note: refreshed.driver_note || null, driver_latest_version: preferredLatest, driver_status: refreshed.suggested_driver_status || "unknown" });
   } catch (err) { console.error("Report GPU route error:", err); return res.status(500).json({ ok: false, reason: "server_error" }); }
 });
 
