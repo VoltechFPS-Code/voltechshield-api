@@ -157,7 +157,7 @@ Return only this JSON:
 `.trim();
 
   const controller = new AbortController();
-  const fetchTimeout = setTimeout(() => controller.abort(), 60000);
+  const fetchTimeout = setTimeout(() => controller.abort(), 90000);
 
   let response;
   try {
