@@ -157,7 +157,7 @@ Return only this JSON:
 `.trim();
 
   const controller = new AbortController();
-  const fetchTimeout = setTimeout(() => controller.abort(), 30000);
+  const fetchTimeout = setTimeout(() => controller.abort(), 60000);
 
   let response;
   try {
@@ -251,57 +251,27 @@ function resolveSubscriptionStatus(data, email = null) {
 
   // subscriber-style statuses from Mamo docs
   if (["active"].includes(rawStatus)) {
-    return {
-      subStatus: "active",
-      licenseStatus: "active",
-      paymentStatus: "paid",
-      latestPayment: latest
-    };
+    return { subStatus: "active", licenseStatus: "active", paymentStatus: "paid", latestPayment: latest };
   }
 
   if (["paused"].includes(rawStatus)) {
-    return {
-      subStatus: "past_due",
-      licenseStatus: "inactive",
-      paymentStatus: "failed",
-      latestPayment: latest
-    };
+    return { subStatus: "past_due", licenseStatus: "inactive", paymentStatus: "failed", latestPayment: latest };
   }
 
   if (["cancelled", "canceled", "inactive", "disabled"].includes(rawStatus)) {
-    return {
-      subStatus: "past_due",
-      licenseStatus: "inactive",
-      paymentStatus: "failed",
-      latestPayment: latest
-    };
+    return { subStatus: "past_due", licenseStatus: "inactive", paymentStatus: "failed", latestPayment: latest };
   }
 
   // payment-style statuses
   if (["captured", "paid", "success", "completed", "settled"].includes(rawStatus)) {
-    return {
-      subStatus: "active",
-      licenseStatus: "active",
-      paymentStatus: "paid",
-      latestPayment: latest
-    };
+    return { subStatus: "active", licenseStatus: "active", paymentStatus: "paid", latestPayment: latest };
   }
 
   if (["failed", "declined", "refunded", "expired", "reversed"].includes(rawStatus)) {
-    return {
-      subStatus: "past_due",
-      licenseStatus: "inactive",
-      paymentStatus: "failed",
-      latestPayment: latest
-    };
+    return { subStatus: "past_due", licenseStatus: "inactive", paymentStatus: "failed", latestPayment: latest };
   }
 
-  return {
-    subStatus: "pending",
-    licenseStatus: null,
-    paymentStatus: null,
-    latestPayment: latest
-  };
+  return { subStatus: "pending", licenseStatus: null, paymentStatus: null, latestPayment: latest };
 }
 
 async function runSubscriptionSync() {
@@ -314,7 +284,14 @@ async function runSubscriptionSync() {
       const paymentsData = await fetchMamoSubscriptionPayments(sub.provider_subscription_id, sub.email);
       const { subStatus, licenseStatus, paymentStatus, latestPayment } = resolveSubscriptionStatus(paymentsData, sub.email);
       const nowIso = new Date().toISOString();
-      await supabase.from("payment_subscriptions").update({ status: subStatus, latest_payment_status: latestPayment ? String(latestPayment.status || "unknown").toLowerCase() : sub.latest_payment_status, latest_payment_at: latestPayment?.created_at || sub.latest_payment_at, last_checked_at: nowIso, metadata: { ...(sub.metadata || {}), last_mamo_sync: paymentsData }, updated_at: nowIso }).eq("id", sub.id);
+      await supabase.from("payment_subscriptions").update({
+        status: subStatus,
+        latest_payment_status: latestPayment ? String(latestPayment.status || "unknown").toLowerCase() : sub.latest_payment_status,
+        latest_payment_at: latestPayment?.created_at || sub.latest_payment_at,
+        last_checked_at: nowIso,
+        metadata: { ...(sub.metadata || {}), last_mamo_sync: paymentsData },
+        updated_at: nowIso
+      }).eq("id", sub.id);
       if (sub.linked_license_id && licenseStatus && paymentStatus) {
         const { data: linkedLicense } = await supabase.from("licenses").select("id, is_legacy, plan, expires_at").eq("id", sub.linked_license_id).single();
         if (linkedLicense && linkedLicense.is_legacy !== true) {
@@ -322,7 +299,10 @@ async function runSubscriptionSync() {
           if (licenseStatus === "active" && paymentStatus === "paid") {
             const plan = sub.plan_code || linkedLicense.plan;
             const days = plan === "monthly" ? 30 : plan === "6months" ? 180 : plan === "yearly" ? 365 : 0;
-            if (days > 0) { const cur = linkedLicense.expires_at ? new Date(linkedLicense.expires_at) : null; if (!cur || cur < new Date()) licenseUpdate.expires_at = addDaysIso(null, days); }
+            if (days > 0) {
+              const cur = linkedLicense.expires_at ? new Date(linkedLicense.expires_at) : null;
+              if (!cur || cur < new Date()) licenseUpdate.expires_at = addDaysIso(null, days);
+            }
           }
           await supabase.from("licenses").update(licenseUpdate).eq("id", sub.linked_license_id);
         }
@@ -355,7 +335,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "2.0.5", notes: "Demo mode, scalable window, startup on boot, hotkey improvements", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.5/VoltechShield_2.0.5_x64-setup.exe" }));
+app.get("/version", (_req, res) => res.json({ version: "2.0.5", notes: "Tabs, benchmark, RAM test, CPU stress, health score, performance timeline", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.5/VoltechShield_2.0.5_x64-setup.exe" }));
 
 // ─── ANNOUNCEMENT ────────────────────────────────────────────────────────────
 const ANNOUNCEMENT_KEY = "announcement";
@@ -412,7 +392,7 @@ app.post("/activate", async (req, res) => {
         return res.json({ valid: false, reason: "bind_failed", ...maintenanceFlags });
       }
       await supabase.from("activations").insert({ license_key: license, hwid, result: "first_activation_success", app_version: app_version || null, ip: last_ip });
-      return res.json({ valid: true, reason: "first_activation_success", ...maintenanceFlags });
+      return res.json({ valid: true, reason: "first_activation_success", discord: licenseRow.discord || null, ...maintenanceFlags });
     }
     if (licenseRow.hwid !== hwid) {
       await supabase.from("activations").insert({ license_key: license, hwid, result: "hwid_mismatch", app_version: app_version || null, ip: last_ip });
@@ -420,7 +400,7 @@ app.post("/activate", async (req, res) => {
     }
     await supabase.from("licenses").update({ last_ip, last_validated_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("license_key", license);
     await supabase.from("activations").insert({ license_key: license, hwid, result: "validation_success", app_version: app_version || null, ip: last_ip });
-    return res.json({ valid: true, reason: "validation_success", ...maintenanceFlags });
+    return res.json({ valid: true, reason: "validation_success", discord: licenseRow.discord || null, ...maintenanceFlags });
   } catch (err) { console.error("Activation route error:", err); return res.status(500).json({ valid: false, reason: "server_error" }); }
 });
 
@@ -432,7 +412,17 @@ app.post("/report-gpu", async (req, res) => {
     const { data: licenseRow, error: licenseError } = await supabase.from("licenses").select("*").eq("license_key", license).single();
     if (licenseError || !licenseRow) return res.status(404).json({ ok: false, reason: "license_not_found" });
     if (licenseRow.hwid && licenseRow.hwid !== hwid) return res.status(403).json({ ok: false, reason: "hwid_mismatch" });
-    await supabase.from("licenses").update({ gpu_name, gpu_driver_version, gpu_raw_driver_version: gpu_raw_driver_version || null, gpu_is_laptop: Boolean(gpu_is_laptop), gpu_brand: gpu_brand || null, cpu_brand: cpu_brand || null, last_gpu_reported_at: reported_at || new Date().toISOString(), updated_at: new Date().toISOString() }).eq("license_key", license);
+
+    await supabase.from("licenses").update({
+      gpu_name, gpu_driver_version,
+      gpu_raw_driver_version: gpu_raw_driver_version || null,
+      gpu_is_laptop: Boolean(gpu_is_laptop),
+      gpu_brand: gpu_brand || null,
+      cpu_brand: cpu_brand || null,
+      last_gpu_reported_at: reported_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }).eq("license_key", license);
+
     let suggested = null;
     try {
       const isNvidia = gpu_brand === "NVIDIA" || gpu_name.toLowerCase().includes("nvidia");
@@ -442,13 +432,8 @@ app.post("/report-gpu", async (req, res) => {
         console.log("Gemini suggested result:", suggested);
       }
     } catch (geminiError) { console.error("Gemini lookup error:", geminiError); }
-    if (suggested) {
-      await supabase.from("licenses").update({ suggested_driver_status: finalStatus || null, suggested_driver_latest: suggested.latest || null, suggested_driver_download_url: suggested.download_url || null, suggested_driver_checked_at: new Date().toISOString(), driver_note: licenseRow.driver_note || suggested.note || null, updated_at: new Date().toISOString() }).eq("license_key", license);
-    }
-    // Sanity-check Gemini's status against a direct version comparison.
-    // Gemini sometimes returns "outdated" in the status field while its own
-    // note and latest field confirm the driver is current — contradictory.
-    // If installed version matches Gemini's latest, force "up-to-date".
+
+    // Sanity-check: if installed version matches Gemini's latest, force up-to-date
     let finalStatus = suggested?.status || licenseRow.suggested_driver_status || null;
     if (finalStatus === "outdated" && suggested?.latest) {
       const normalize = (v) => String(v || "").trim().replace(/\s+/g, "").toLowerCase();
@@ -456,6 +441,17 @@ app.post("/report-gpu", async (req, res) => {
         finalStatus = "up-to-date";
         console.log(`[driver] Overriding Gemini status: installed ${gpu_driver_version} === latest ${suggested.latest} -> up-to-date`);
       }
+    }
+
+    if (suggested) {
+      await supabase.from("licenses").update({
+        suggested_driver_status: finalStatus || null,
+        suggested_driver_latest: suggested.latest || null,
+        suggested_driver_download_url: suggested.download_url || null,
+        suggested_driver_checked_at: new Date().toISOString(),
+        driver_note: licenseRow.driver_note || suggested.note || null,
+        updated_at: new Date().toISOString()
+      }).eq("license_key", license);
     }
 
     const refreshed = {
@@ -467,10 +463,27 @@ app.post("/report-gpu", async (req, res) => {
     };
     const preferredUrl = refreshed.approved_driver_download_url || refreshed.suggested_driver_download_url || null;
     const preferredLatest = refreshed.approved_driver_latest || refreshed.suggested_driver_latest || null;
-    const effectiveStatus = refreshed.suggested_driver_status || "unknown";
-    const driverUpdateAvailable = Boolean(preferredUrl) && effectiveStatus === "outdated";
-    return res.json({ ok: true, gpu_name, gpu_driver_version, driver_update_available: driverUpdateAvailable, driver_download_url: preferredUrl, driver_note: refreshed.driver_note || null, driver_latest_version: preferredLatest, driver_status: refreshed.suggested_driver_status || "unknown" });
+    const driverUpdateAvailable = Boolean(preferredUrl) && finalStatus === "outdated";
+    return res.json({ ok: true, gpu_name, gpu_driver_version, driver_update_available: driverUpdateAvailable, driver_download_url: preferredUrl, driver_note: refreshed.driver_note || null, driver_latest_version: preferredLatest, driver_status: finalStatus || "unknown" });
   } catch (err) { console.error("Report GPU route error:", err); return res.status(500).json({ ok: false, reason: "server_error" }); }
+});
+
+// ─── REPORT PERFORMANCE (Health Score) ───────────────────────────────────────
+app.post("/report-performance", async (req, res) => {
+  try {
+    const { license, hwid, health_score, score_breakdown } = req.body;
+    if (!license || !hwid) return res.status(400).json({ ok: false, reason: "missing_fields" });
+    const { data: licenseRow, error } = await supabase.from("licenses").select("id, hwid").eq("license_key", license).single();
+    if (error || !licenseRow) return res.status(404).json({ ok: false, reason: "license_not_found" });
+    if (licenseRow.hwid && licenseRow.hwid !== hwid) return res.status(403).json({ ok: false, reason: "hwid_mismatch" });
+    await supabase.from("licenses").update({
+      latest_health_score: typeof health_score === "number" ? Math.round(Math.min(100, Math.max(0, health_score))) : null,
+      latest_health_breakdown: typeof score_breakdown === "string" ? score_breakdown.slice(0, 2000) : null,
+      last_health_reported_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }).eq("license_key", license);
+    return res.json({ ok: true });
+  } catch (err) { console.error("Report performance error:", err); return res.status(500).json({ ok: false, reason: "server_error" }); }
 });
 
 // ─── ADMIN ROUTES ────────────────────────────────────────────────────────────
@@ -509,7 +522,14 @@ app.post("/admin/licenses/reset-hwid", requireAdmin, async (req, res) => {
   try {
     const { license_key } = req.body;
     if (!license_key) return res.status(400).json({ error: "missing_license_key" });
-    const { error } = await supabase.from("licenses").update({ hwid: null, gpu_name: null, gpu_driver_version: null, gpu_raw_driver_version: null, gpu_is_laptop: null, gpu_brand: null, cpu_brand: null, last_gpu_reported_at: null, suggested_driver_status: null, suggested_driver_latest: null, suggested_driver_download_url: null, suggested_driver_checked_at: null, approved_driver_latest: null, approved_driver_download_url: null, driver_note: null, updated_at: new Date().toISOString() }).eq("license_key", license_key);
+    const { error } = await supabase.from("licenses").update({
+      hwid: null, gpu_name: null, gpu_driver_version: null, gpu_raw_driver_version: null,
+      gpu_is_laptop: null, gpu_brand: null, cpu_brand: null, last_gpu_reported_at: null,
+      suggested_driver_status: null, suggested_driver_latest: null,
+      suggested_driver_download_url: null, suggested_driver_checked_at: null,
+      approved_driver_latest: null, approved_driver_download_url: null,
+      driver_note: null, updated_at: new Date().toISOString()
+    }).eq("license_key", license_key);
     if (error) throw error;
     return res.json({ success: true });
   } catch (err) { return res.status(500).json({ error: "reset_hwid_failed" }); }
@@ -519,7 +539,11 @@ app.post("/admin/licenses/set-maintenance", requireAdmin, async (req, res) => {
   try {
     const { license_key, recommended_maintenance, recommended_maintenance_message } = req.body;
     if (!license_key) return res.status(400).json({ error: "missing_license_key" });
-    const payload = { recommended_maintenance: Boolean(recommended_maintenance), recommended_maintenance_message: typeof recommended_maintenance_message === "string" && recommended_maintenance_message.trim() ? recommended_maintenance_message.trim() : null, updated_at: new Date().toISOString() };
+    const payload = {
+      recommended_maintenance: Boolean(recommended_maintenance),
+      recommended_maintenance_message: typeof recommended_maintenance_message === "string" && recommended_maintenance_message.trim() ? recommended_maintenance_message.trim() : null,
+      updated_at: new Date().toISOString()
+    };
     const { error } = await supabase.from("licenses").update(payload).eq("license_key", license_key);
     if (error) throw error;
     return res.json({ success: true, ...payload });
@@ -550,7 +574,10 @@ app.post("/admin/licenses/set-discord", requireAdmin, async (req, res) => {
   try {
     const { license_key, discord } = req.body;
     if (!license_key) return res.status(400).json({ error: "missing_license_key" });
-    const { error } = await supabase.from("licenses").update({ discord: typeof discord === "string" && discord.trim() ? discord.trim() : null, updated_at: new Date().toISOString() }).eq("license_key", license_key);
+    const { error } = await supabase.from("licenses").update({
+      discord: typeof discord === "string" && discord.trim() ? discord.trim() : null,
+      updated_at: new Date().toISOString()
+    }).eq("license_key", license_key);
     if (error) throw error;
     return res.json({ success: true });
   } catch (err) { return res.status(500).json({ error: "set_discord_failed" }); }
@@ -561,7 +588,15 @@ app.post("/admin/licenses/create", requireAdmin, async (req, res) => {
     const { license_key, email, discord, plan, status, expires_at, issued_by } = req.body;
     if (!license_key || !email) return res.status(400).json({ error: "missing_fields" });
     const nowIso = new Date().toISOString();
-    const { error } = await supabase.from("licenses").upsert({ license_key, hwid: null, email, discord: typeof discord === "string" && discord.trim() ? discord.trim() : null, plan: plan || "monthly", status: status || "active", expires_at: expires_at || null, created_manually: true, issued_by: typeof issued_by === "string" && issued_by.trim() ? issued_by.trim() : "technician", payment_required: false, payment_status: "waived", is_legacy: true, created_at: nowIso, updated_at: nowIso }, { onConflict: "license_key", ignoreDuplicates: true });
+    const { error } = await supabase.from("licenses").upsert({
+      license_key, hwid: null, email,
+      discord: typeof discord === "string" && discord.trim() ? discord.trim() : null,
+      plan: plan || "monthly", status: status || "active",
+      expires_at: expires_at || null, created_manually: true,
+      issued_by: typeof issued_by === "string" && issued_by.trim() ? issued_by.trim() : "technician",
+      payment_required: false, payment_status: "waived", is_legacy: true,
+      created_at: nowIso, updated_at: nowIso
+    }, { onConflict: "license_key", ignoreDuplicates: true });
     if (error) throw error;
     return res.json({ success: true });
   } catch (err) { return res.status(500).json({ error: "create_license_failed" }); }
@@ -572,7 +607,14 @@ app.post("/admin/licenses/create-paid", requireAdmin, async (req, res) => {
     const { license_key, email, discord, plan, expires_at } = req.body;
     if (!license_key || !email) return res.status(400).json({ error: "missing_fields" });
     const nowIso = new Date().toISOString();
-    const { error } = await supabase.from("licenses").upsert({ license_key, hwid: null, email, discord: typeof discord === "string" && discord.trim() ? discord.trim() : null, plan: plan || "monthly", status: "inactive", expires_at: expires_at || null, created_manually: false, issued_by: "payment_system", payment_required: true, payment_status: "pending", is_legacy: false, created_at: nowIso, updated_at: nowIso }, { onConflict: "license_key", ignoreDuplicates: true });
+    const { error } = await supabase.from("licenses").upsert({
+      license_key, hwid: null, email,
+      discord: typeof discord === "string" && discord.trim() ? discord.trim() : null,
+      plan: plan || "monthly", status: "inactive", expires_at: expires_at || null,
+      created_manually: false, issued_by: "payment_system",
+      payment_required: true, payment_status: "pending", is_legacy: false,
+      created_at: nowIso, updated_at: nowIso
+    }, { onConflict: "license_key", ignoreDuplicates: true });
     if (error) throw error;
     return res.json({ success: true });
   } catch (err) { return res.status(500).json({ error: "create_paid_license_failed" }); }
@@ -588,16 +630,33 @@ app.post("/admin/subscriptions/create", requireAdmin, async (req, res) => {
     if (licenseRow.is_legacy === true) return res.status(400).json({ error: "license_is_legacy" });
     const nowIso = new Date().toISOString();
     const subscriptionRef = generateSubRef();
-    const { error: insertError } = await supabase.from("payment_subscriptions").insert({ subscription_ref: subscriptionRef, provider: "mamopay", provider_subscription_id, linked_license_id: licenseRow.id, customer_name: customer_name || null, email, discord: typeof discord === "string" && discord.trim() ? discord.trim() : null, phone: phone || null, plan_code: plan_code || licenseRow.plan || "monthly", status: "pending", created_at: nowIso, updated_at: nowIso });
+    const { error: insertError } = await supabase.from("payment_subscriptions").insert({
+      subscription_ref: subscriptionRef, provider: "mamopay",
+      provider_subscription_id, linked_license_id: licenseRow.id,
+      customer_name: customer_name || null, email,
+      discord: typeof discord === "string" && discord.trim() ? discord.trim() : null,
+      phone: phone || null, plan_code: plan_code || licenseRow.plan || "monthly",
+      status: "pending", created_at: nowIso, updated_at: nowIso
+    });
     if (insertError) throw insertError;
-    await supabase.from("licenses").update({ linked_subscription_ref: subscriptionRef, payment_required: true, payment_status: "pending", updated_at: nowIso }).eq("license_key", license_key);
+    await supabase.from("licenses").update({
+      linked_subscription_ref: subscriptionRef,
+      payment_required: true, payment_status: "pending", updated_at: nowIso
+    }).eq("license_key", license_key);
     let syncResult = null;
     try {
       const paymentsData = await fetchMamoSubscriptionPayments(provider_subscription_id, email);
       const resolved = resolveSubscriptionStatus(paymentsData, email);
       syncResult = resolved;
-      await supabase.from("payment_subscriptions").update({ status: resolved.subStatus, latest_payment_status: resolved.latestPayment ? String(resolved.latestPayment.status || "unknown").toLowerCase() : null, latest_payment_at: resolved.latestPayment?.created_at || null, last_checked_at: nowIso, updated_at: nowIso }).eq("subscription_ref", subscriptionRef);
-      if (resolved.licenseStatus && resolved.paymentStatus) await supabase.from("licenses").update({ status: resolved.licenseStatus, payment_status: resolved.paymentStatus, updated_at: nowIso }).eq("license_key", license_key);
+      await supabase.from("payment_subscriptions").update({
+        status: resolved.subStatus,
+        latest_payment_status: resolved.latestPayment ? String(resolved.latestPayment.status || "unknown").toLowerCase() : null,
+        latest_payment_at: resolved.latestPayment?.created_at || null,
+        last_checked_at: nowIso, updated_at: nowIso
+      }).eq("subscription_ref", subscriptionRef);
+      if (resolved.licenseStatus && resolved.paymentStatus) {
+        await supabase.from("licenses").update({ status: resolved.licenseStatus, payment_status: resolved.paymentStatus, updated_at: nowIso }).eq("license_key", license_key);
+      }
     } catch (syncErr) { console.error("[create-subscription] Immediate sync failed:", syncErr.message); }
     return res.json({ success: true, subscription_ref: subscriptionRef, license_key, linked_license_id: licenseRow.id, immediate_sync: syncResult ? { sub_status: syncResult.subStatus, license_status: syncResult.licenseStatus, payment_status: syncResult.paymentStatus } : null });
   } catch (err) { return res.status(500).json({ error: "create_subscription_failed", details: String(err.message || err) }); }
@@ -636,10 +695,25 @@ app.post("/admin/payments/create-mamo-order", requireAdmin, async (req, res) => 
     const { license_key, email, discord, customer_name, phone, plan_code, amount, currency, expires_at } = req.body;
     if (!license_key || !email || !plan_code || !amount) return res.status(400).json({ error: "missing_fields" });
     const nowIso = new Date().toISOString();
-    const { data: insertedLicense, error: licenseError } = await supabase.from("licenses").insert({ license_key, hwid: null, email, discord: typeof discord === "string" && discord.trim() ? discord.trim() : null, plan: plan_code, status: "inactive", expires_at: expires_at || null, created_manually: false, issued_by: "payment_system", payment_required: true, payment_status: "pending", is_legacy: false, created_at: nowIso, updated_at: nowIso }).select("id, license_key").single();
+    const { data: insertedLicense, error: licenseError } = await supabase.from("licenses").insert({
+      license_key, hwid: null, email,
+      discord: typeof discord === "string" && discord.trim() ? discord.trim() : null,
+      plan: plan_code, status: "inactive", expires_at: expires_at || null,
+      created_manually: false, issued_by: "payment_system",
+      payment_required: true, payment_status: "pending", is_legacy: false,
+      created_at: nowIso, updated_at: nowIso
+    }).select("id, license_key").single();
     if (licenseError) throw licenseError;
     const orderRef = generateOrderRef();
-    const { data: insertedOrder, error: orderError } = await supabase.from("payment_orders").insert({ order_ref: orderRef, customer_name: customer_name || null, email, discord: typeof discord === "string" && discord.trim() ? discord.trim() : null, phone: phone || null, provider: "mamopay", plan_code, amount, currency: currency || "AED", status: "pending", linked_license_id: insertedLicense.id, auto_create_license: false, metadata: { license_key, source: "admin_create_mamo_order" }, created_at: nowIso, updated_at: nowIso }).select("*").single();
+    const { data: insertedOrder, error: orderError } = await supabase.from("payment_orders").insert({
+      order_ref: orderRef, customer_name: customer_name || null, email,
+      discord: typeof discord === "string" && discord.trim() ? discord.trim() : null,
+      phone: phone || null, provider: "mamopay", plan_code, amount,
+      currency: currency || "AED", status: "pending",
+      linked_license_id: insertedLicense.id, auto_create_license: false,
+      metadata: { license_key, source: "admin_create_mamo_order" },
+      created_at: nowIso, updated_at: nowIso
+    }).select("*").single();
     if (orderError) throw orderError;
     const mamoResult = await createMamoPaymentLink({ amount, currency: currency || "AED", description: `VoltechShield ${plan_code} license ${license_key}`, customer_name: customer_name || "", customer_email: email, order_ref: orderRef });
     const providerOrderId = mamoResult.id || mamoResult.link_id || mamoResult.payment_link_id || mamoResult.external_id || null;
@@ -674,7 +748,10 @@ app.post("/admin/payments/sync-mamo", requireAdmin, async (_req, res) => {
           if (ll?.is_legacy !== true) lu.status = nextLicense;
           if (nextPayment === "paid") {
             let exp = ll?.expires_at;
-            if (order.plan_code==="monthly") exp=addDaysIso(exp,30); else if (order.plan_code==="6months") exp=addDaysIso(exp,180); else if (order.plan_code==="yearly") exp=addDaysIso(exp,365); else if (order.plan_code==="lifetime") exp=null;
+            if (order.plan_code==="monthly") exp=addDaysIso(exp,30);
+            else if (order.plan_code==="6months") exp=addDaysIso(exp,180);
+            else if (order.plan_code==="yearly") exp=addDaysIso(exp,365);
+            else if (order.plan_code==="lifetime") exp=null;
             lu.expires_at=exp; lu.last_activated_at=new Date().toISOString(); lu.source_order_id_text=order.provider_order_id||null; lu.source_payment_id_text=providerPaymentId||null;
           }
           await supabase.from("licenses").update(lu).eq("id", order.linked_license_id);
@@ -688,7 +765,11 @@ app.post("/admin/payments/sync-mamo", requireAdmin, async (_req, res) => {
 
 async function createMamoPaymentLink({ amount, currency, description, customer_name, customer_email, order_ref }) {
   if (!process.env.MAMO_API_KEY || !process.env.MAMO_API_BASE_URL) throw new Error("Missing MAMO env vars");
-  const response = await fetch(`${process.env.MAMO_API_BASE_URL}/links`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.MAMO_API_KEY}` }, body: JSON.stringify({ title: description, description, amount, currency, external_id: order_ref, customer: { name: customer_name||"", email: customer_email||"" } }) });
+  const response = await fetch(`${process.env.MAMO_API_BASE_URL}/links`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.MAMO_API_KEY}` },
+    body: JSON.stringify({ title: description, description, amount, currency, external_id: order_ref, customer: { name: customer_name||"", email: customer_email||"" } })
+  });
   const text = await response.text();
   if (!response.ok) throw new Error(`Mamo create link failed: ${response.status} // ${text}`);
   try { return JSON.parse(text); } catch { throw new Error(`Mamo create link non-JSON: ${text}`); }
@@ -696,7 +777,10 @@ async function createMamoPaymentLink({ amount, currency, description, customer_n
 
 async function fetchMamoPaymentStatus(providerOrderId) {
   if (!process.env.MAMO_API_KEY || !process.env.MAMO_API_BASE_URL) throw new Error("Missing MAMO env vars");
-  const response = await fetch(`${process.env.MAMO_API_BASE_URL}/links/${providerOrderId}`, { method: "GET", headers: { Authorization: `Bearer ${process.env.MAMO_API_KEY}` } });
+  const response = await fetch(`${process.env.MAMO_API_BASE_URL}/links/${providerOrderId}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${process.env.MAMO_API_KEY}` }
+  });
   const text = await response.text();
   if (!response.ok) throw new Error(`Mamo fetch status failed: ${response.status} // ${text}`);
   try { return JSON.parse(text); } catch { throw new Error(`Mamo status non-JSON: ${text}`); }
