@@ -337,6 +337,61 @@ app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", s
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
 app.get("/version", (_req, res) => res.json({ version: "2.0.5", notes: "Tabs, benchmark, RAM test, CPU stress, health score, performance timeline", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.5/VoltechShield_2.0.5_x64-setup.exe" }));
 
+// ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
+const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
+const DRIVER_BLOCKLIST_FALLBACK = { entries: [] };
+
+async function getDriverBlocklist() {
+  try {
+    const { data, error } = await supabase.from("app_config").select("value").eq("key", DRIVER_BLOCKLIST_KEY).single();
+    if (error || !data) return DRIVER_BLOCKLIST_FALLBACK;
+    return { entries: Array.isArray(data.value?.entries) ? data.value.entries : [] };
+  } catch { return DRIVER_BLOCKLIST_FALLBACK; }
+}
+
+async function setDriverBlocklist(entries) {
+  const value = { entries };
+  await supabase.from("app_config").upsert({ key: DRIVER_BLOCKLIST_KEY, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
+  return value;
+}
+
+function isUrlBlocked(url, entries) {
+  if (!url) return null;
+  const lower = url.toLowerCase();
+  return entries.find(e => lower.includes(String(e.pattern || "").toLowerCase())) || null;
+}
+
+app.get("/admin/driver-blocklist", requireAdmin, async (_req, res) => {
+  try {
+    const { entries } = await getDriverBlocklist();
+    return res.json({ entries });
+  } catch (err) { return res.status(500).json({ error: "blocklist_fetch_failed" }); }
+});
+
+app.post("/admin/driver-blocklist", requireAdmin, async (req, res) => {
+  try {
+    const { pattern, reason } = req.body;
+    if (!pattern || typeof pattern !== "string" || !pattern.trim()) return res.status(400).json({ error: "missing_pattern" });
+    const { entries } = await getDriverBlocklist();
+    const newEntry = { id: `blk_${Date.now()}`, pattern: pattern.trim(), reason: typeof reason === "string" && reason.trim() ? reason.trim() : "", blocked_at: new Date().toISOString() };
+    const updated = await setDriverBlocklist([...entries, newEntry]);
+    console.log(`[blocklist] Added block entry: ${newEntry.pattern} — ${newEntry.reason}`);
+    return res.json({ success: true, entry: newEntry, total: updated.entries.length });
+  } catch (err) { return res.status(500).json({ error: "blocklist_add_failed" }); }
+});
+
+app.delete("/admin/driver-blocklist/:id", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { entries } = await getDriverBlocklist();
+    const filtered = entries.filter(e => e.id !== id);
+    if (filtered.length === entries.length) return res.status(404).json({ error: "entry_not_found" });
+    await setDriverBlocklist(filtered);
+    console.log(`[blocklist] Removed block entry id=${id}`);
+    return res.json({ success: true, removed_id: id, total: filtered.length });
+  } catch (err) { return res.status(500).json({ error: "blocklist_remove_failed" }); }
+});
+
 // ─── ANNOUNCEMENT ────────────────────────────────────────────────────────────
 const ANNOUNCEMENT_KEY = "announcement";
 const ANNOUNCEMENT_FALLBACK = { active: true, message: "" };
@@ -461,10 +516,26 @@ app.post("/report-gpu", async (req, res) => {
       suggested_driver_download_url: suggested?.download_url || licenseRow.suggested_driver_download_url || null,
       driver_note: licenseRow.driver_note || suggested?.note || null
     };
-    const preferredUrl = refreshed.approved_driver_download_url || refreshed.suggested_driver_download_url || null;
+    let preferredUrl = refreshed.approved_driver_download_url || refreshed.suggested_driver_download_url || null;
     const preferredLatest = refreshed.approved_driver_latest || refreshed.suggested_driver_latest || null;
-    const driverUpdateAvailable = Boolean(preferredUrl) && finalStatus === "outdated";
-    return res.json({ ok: true, gpu_name, gpu_driver_version, driver_update_available: driverUpdateAvailable, driver_download_url: preferredUrl, driver_note: refreshed.driver_note || null, driver_latest_version: preferredLatest, driver_status: finalStatus || "unknown" });
+    let driverUpdateAvailable = Boolean(preferredUrl) && finalStatus === "outdated";
+
+    // Check driver blocklist
+    let driverBlocked = false;
+    try {
+      const { entries: blockEntries } = await getDriverBlocklist();
+      if (blockEntries.length > 0) {
+        const urlMatch = isUrlBlocked(preferredUrl, blockEntries) || isUrlBlocked(preferredLatest, blockEntries);
+        if (urlMatch) {
+          console.log(`[blocklist] Blocking driver URL for ${gpu_name}: matched pattern "${urlMatch.pattern}" (${urlMatch.reason})`);
+          preferredUrl = null;
+          driverUpdateAvailable = false;
+          driverBlocked = true;
+        }
+      }
+    } catch (blErr) { console.error("[blocklist] Check failed:", blErr.message); }
+
+    return res.json({ ok: true, gpu_name, gpu_driver_version, driver_update_available: driverUpdateAvailable, driver_download_url: preferredUrl, driver_note: refreshed.driver_note || null, driver_latest_version: preferredLatest, driver_status: finalStatus || "unknown", ...(driverBlocked ? { driver_blocked: true } : {}) });
   } catch (err) { console.error("Report GPU route error:", err); return res.status(500).json({ ok: false, reason: "server_error" }); }
 });
 
@@ -484,6 +555,19 @@ app.post("/report-performance", async (req, res) => {
     }).eq("license_key", license);
     return res.json({ ok: true });
   } catch (err) { console.error("Report performance error:", err); return res.status(500).json({ ok: false, reason: "server_error" }); }
+});
+
+// ─── ADMIN: HEALTH REPORTS ───────────────────────────────────────────────────
+app.get("/admin/health-reports", requireAdmin, async (_req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("licenses")
+      .select("license_key, email, discord, status, gpu_name, cpu_brand, latest_health_score, latest_health_breakdown, last_health_reported_at, hwid, updated_at")
+      .not("latest_health_score", "is", null)
+      .order("last_health_reported_at", { ascending: false });
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) { return res.status(500).json({ error: "health_reports_failed" }); }
 });
 
 // ─── ADMIN ROUTES ────────────────────────────────────────────────────────────
