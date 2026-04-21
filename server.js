@@ -596,7 +596,7 @@ app.get("/admin/licenses/search", requireAdmin, async (req, res) => {
   try {
     const q = (req.query.q || "").toString().trim();
     if (!q) return res.json([]);
-    const { data, error } = await supabase.from("licenses").select("*").or(`license_key.ilike.%${q}%,hwid.ilike.%${q}%,email.ilike.%${q}%,discord.ilike.%${q}%`).order("created_at", { ascending: false }).limit(25);
+    const { data, error } = await supabase.from("licenses").select("*").or(`license_key.ilike.%${q}%,hwid.ilike.%${q}%,email.ilike.%${q}%,discord.ilike.%${q}%`).order("created_at", { ascending: false }).limit(200);
     if (error) throw error;
     return res.json(data);
   } catch (err) { return res.status(500).json({ error: "search_failed" }); }
