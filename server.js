@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+const DRIVER_LOOKUP_ENABLED = false; // set to true to re-enable Gemini driver lookups
+
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
@@ -340,7 +342,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "3.0.0", notes: "Tabs, benchmark, RAM test, CPU stress, health score, performance timeline", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v3.0.0/VoltechShield_3.0.0_x64-setup.exe" }));
+app.get("/version", (_req, res) => res.json({ version: "2.0.5", notes: "Tabs, benchmark, RAM test, CPU stress, health score, performance timeline", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v2.0.5/VoltechShield_2.0.5_x64-setup.exe" }));
 
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
@@ -487,7 +489,7 @@ app.post("/report-gpu", async (req, res) => {
     try {
       const isNvidia = gpu_brand === "NVIDIA" || gpu_name.toLowerCase().includes("nvidia");
       const isAmd    = gpu_brand === "AMD"    || gpu_name.toLowerCase().includes("amd") || gpu_name.toLowerCase().includes("radeon");
-      if (isNvidia || isAmd) {
+      if (DRIVER_LOOKUP_ENABLED && (isNvidia || isAmd)) {
         suggested = await lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop: Boolean(gpu_is_laptop), gpu_brand: gpu_brand || (isAmd ? "AMD" : "NVIDIA") });
         console.log("Gemini suggested result:", suggested);
       }
