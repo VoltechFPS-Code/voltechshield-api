@@ -60,13 +60,18 @@ function sanitizeDriverResult(result) {
   if (downloadUrl) {
     const lower = downloadUrl.toLowerCase();
     const bad =
+      // NVIDIA generic pages
       lower.includes("nvidia.com/download/index.aspx") ||
       lower.includes("nvidia.com/download/find.aspx") ||
       lower.includes("nvidia.com/en-us/drivers/") ||
       lower.includes("nvidia.com/en-eu/drivers/") ||
       lower.includes("/drivers/results/") ||
+      // AMD generic/support pages — direct CDN links (drivers.amd.com, download.amd.com) are allowed
       lower.includes("amd.com/en/support") ||
-      (lower.includes("amd.com") && !lower.endsWith(".exe") && !lower.includes("download"));
+      lower.includes("amd.com/support") ||
+      lower.includes("amd.com/en/technologies") ||
+      lower.includes("amd.com/en/resources") ||
+      lower.includes("community.amd.com");
     if (bad) downloadUrl = null;
   }
   return { status, latest, download_url: downloadUrl, note };
