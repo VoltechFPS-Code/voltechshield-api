@@ -489,9 +489,19 @@ app.post("/report-gpu", async (req, res) => {
     try {
       const isNvidia = gpu_brand === "NVIDIA" || gpu_name.toLowerCase().includes("nvidia");
       const isAmd    = gpu_brand === "AMD"    || gpu_name.toLowerCase().includes("amd") || gpu_name.toLowerCase().includes("radeon");
-      if (DRIVER_LOOKUP_ENABLED && (isNvidia || isAmd)) {
+
+      const checkedAt = licenseRow.suggested_driver_checked_at;
+      const hoursSinceCheck = checkedAt
+        ? (Date.now() - new Date(checkedAt).getTime()) / 3600000
+        : Infinity;
+      const cacheStale = hoursSinceCheck > 24;
+
+      if (DRIVER_LOOKUP_ENABLED && (isNvidia || isAmd) && cacheStale) {
+        console.log(`[driver] Cache stale (${Math.round(hoursSinceCheck)}h) — calling Gemini`);
         suggested = await lookupDriverWithGemini({ gpu_name, gpu_driver_version, gpu_is_laptop: Boolean(gpu_is_laptop), gpu_brand: gpu_brand || (isAmd ? "AMD" : "NVIDIA") });
         console.log("Gemini suggested result:", suggested);
+      } else if (!cacheStale) {
+        console.log(`[driver] Cache fresh (${Math.round(hoursSinceCheck)}h) — skipping Gemini`);
       }
     } catch (geminiError) { console.error("Gemini lookup error:", geminiError); }
 
