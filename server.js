@@ -1,6 +1,6 @@
 require("dotenv").config();
 
-const DRIVER_LOOKUP_ENABLED = false; // set to true to re-enable Gemini driver lookups
+const DRIVER_LOOKUP_ENABLED = true; // set to true to re-enable Gemini driver lookups
 
 const express = require("express");
 const cors = require("cors");
