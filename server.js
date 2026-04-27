@@ -342,7 +342,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "3.0.1", notes: "Desktop Audio and Mic Options, GOXLR Fix", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v3.0.1/VoltechShield_3.0.1_x64-setup.exe" }));
+app.get("/version", (_req, res) => res.json({ version: "3.0.2", notes: "Tutorial, New Bloat Benchmark, Debugging, Lightening of Program, Changes in System Health Score test, more accurate translations for Arabic, وضع البرنامج التعليمي، معيار جديد لاختبار تضخم البرامج لنظام ويندوز، تصحيح الأخطاء، تخفيف البرنامج، تغييرات في اختبار درجة صحة النظام، ترجمات أكثر دقة للغة العربية.", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v3.0.2/VoltechShield_3.0.2_x64-setup.exe" }));
 
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
