@@ -342,7 +342,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "3.0.3", notes: "Bugs Fixed, Nvidia Profile Updates, Make sure to uninstall old app when downloading new version. تم إصلاح الأخطاء، وتحديث إعدادات ملف تعريف انفيديا، تأكد من إلغاء تثبيت التطبيق القديم عند تنزيل الإصدار الجديد. ", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v3.0.3/VoltechShield_3.0.3_x64-setup.exe" }));
+app.get("/version", (_req, res) => res.json({ version: "4.0.0", notes: "New Clip Editor", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v4.0.0/VoltechShield_4.0.0_x64-setup.exe" }));
 
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
