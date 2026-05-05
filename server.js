@@ -342,7 +342,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "4.0.1", notes: "New Clip Editor", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v4.0.1/VoltechShield_4.0.1_x64-setup.exe" }));
+app.get("/version", (_req, res) => res.json({ version: "4.0.1", notes: "Integrated RTSS Install, RTSS Refinement, VoltechEdit Improvements, Game Clipping Engine Updates, 120 FPS Support Extended, 5 Minute and 10 Minute Clipping Added.", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v4.0.1/VoltechShield_4.0.1_x64-setup.exe" }));
 
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
