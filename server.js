@@ -342,7 +342,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "4.0.2", notes: "Integrated RTSS Install, RTSS Refinement, VoltechEdit Improvements, Game Clipping Engine Updates, 120 FPS Support Extended, 5 Minute and 10 Minute Clipping Added. تم تثبيت النظام المتكامل للرسم على الشاشة، تحسين النظام، تحسينات محرر فولتيك، تحديثات محرك تسجيل الألعاب، دعم ١٢٠ إطارًا في الثانية موسع، وإضافة تسجيل لمدة ٥ دقائق و١٠ دقائق.", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v4.0.2/VoltechShield_4.0.2_x64-setup.exe" }));
+app.get("/version", (_req, res) => res.json({ version: "4.0.2", notes: "New Clip Editor", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v4.0.2/VoltechShield_4.0.2_x64-setup.exe" }));
 
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
@@ -551,6 +551,17 @@ app.post("/report-gpu", async (req, res) => {
         }
       }
     } catch (blErr) { console.error("[blocklist] Check failed:", blErr.message); }
+
+    // AMD CDN links are unstable — Gemini often returns drivers.amd.com paths that
+    // resolve to "driver unavailable" pages. Fall back to AMD's auto-detect page
+    // which is always live and always shows the correct latest driver.
+    if (!driverBlocked && finalStatus === "outdated") {
+      const isAmdGpu = gpu_brand === "AMD" || gpu_name.toLowerCase().includes("amd") || gpu_name.toLowerCase().includes("radeon");
+      if (isAmdGpu && (!preferredUrl || !preferredUrl.toLowerCase().endsWith(".exe"))) {
+        preferredUrl = "https://www.amd.com/en/support/download/drivers.html";
+        driverUpdateAvailable = true;
+      }
+    }
 
     return res.json({ ok: true, gpu_name, gpu_driver_version, driver_update_available: driverUpdateAvailable, driver_download_url: preferredUrl, driver_note: refreshed.driver_note || null, driver_latest_version: preferredLatest, driver_status: finalStatus || "unknown", ...(driverBlocked ? { driver_blocked: true } : {}) });
   } catch (err) { console.error("Report GPU route error:", err); return res.status(500).json({ ok: false, reason: "server_error" }); }
