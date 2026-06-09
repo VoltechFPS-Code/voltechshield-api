@@ -921,17 +921,34 @@ function getCachedGeo(ip) {
 }
 
 async function fetchGeoIpBatch(ips) {
-  // ip-api.com free tier: HTTP only, up to 100 IPs per call, 45 req/min
-  const body = ips.map(q => ({ query: q, fields: "query,country,countryCode,city,status,message" }));
-  const res = await fetch("http://ip-api.com/batch?fields=query,country,countryCode,city,status,message", {
+  // ipinfo.io batch: POST { "ip1": null, "ip2": null, ... } → { "ip1": { country, city, ... } }
+  // Free: 1k/day no token, 50k/month with IPINFO_TOKEN env var
+  const token = process.env.IPINFO_TOKEN;
+  const url = token ? `https://ipinfo.io/batch?token=${token}` : "https://ipinfo.io/batch";
+  const body = Object.fromEntries(ips.map(ip => [ip, null]));
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10000)
   });
-  if (!res.ok) throw new Error(`ip-api.com HTTP ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`ipinfo.io HTTP ${res.status}`);
+  const data = await res.json();
+  // Normalise to array format matching caller expectations
+  return ips.map(ip => {
+    const row = data[ip] || {};
+    return {
+      query: ip,
+      status: row.bogon || (!row.country) ? "fail" : "success",
+      country: row.country ? isoToCountryName(row.country) : null,
+      countryCode: row.country || null,
+      city: row.city || null
+    };
+  });
 }
+
+const ISO_NAMES = { AE:"United Arab Emirates",SA:"Saudi Arabia",QA:"Qatar",KW:"Kuwait",BH:"Bahrain",OM:"Oman",EG:"Egypt",JO:"Jordan",LB:"Lebanon",IQ:"Iraq",SY:"Syria",YE:"Yemen",US:"United States",GB:"United Kingdom",DE:"Germany",FR:"France",NL:"Netherlands",SG:"Singapore",IN:"India",PK:"Pakistan",TR:"Turkey",MA:"Morocco",TN:"Tunisia",DZ:"Algeria",LY:"Libya",SD:"Sudan",SO:"Somalia",PH:"Philippines",BD:"Bangladesh",LK:"Sri Lanka",NG:"Nigeria",KE:"Kenya" };
+function isoToCountryName(code) { return ISO_NAMES[code] || code; }
 
 // POST /admin/geoip/batch  — body: { ips: ["1.2.3.4", ...] }
 // Returns: { "1.2.3.4": { country: "United Arab Emirates", countryCode: "AE", city: "Dubai" } }
