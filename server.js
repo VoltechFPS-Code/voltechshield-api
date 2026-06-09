@@ -898,6 +898,105 @@ async function fetchMamoPaymentStatus(providerOrderId) {
   try { return JSON.parse(text); } catch { throw new Error(`Mamo status non-JSON: ${text}`); }
 }
 
+// ─── GEOIP ───────────────────────────────────────────────────────────────────
+const geoCache = new Map();
+const GEO_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function isPrivateIp(ip) {
+  if (!ip) return true;
+  const s = ip.trim();
+  return (
+    s === "127.0.0.1" || s === "::1" || s.startsWith("localhost") ||
+    s.startsWith("10.") || s.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(s) ||
+    s.startsWith("fc") || s.startsWith("fd")
+  );
+}
+
+function getCachedGeo(ip) {
+  const e = geoCache.get(ip);
+  if (!e) return null;
+  if (Date.now() - e.cachedAt > GEO_CACHE_TTL_MS) { geoCache.delete(ip); return null; }
+  return e;
+}
+
+async function fetchGeoIpBatch(ips) {
+  // ip-api.com free tier: HTTP only, up to 100 IPs per call, 45 req/min
+  const body = ips.map(q => ({ query: q, fields: "query,country,countryCode,city,status,message" }));
+  const res = await fetch("http://ip-api.com/batch?fields=query,country,countryCode,city,status,message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!res.ok) throw new Error(`ip-api.com HTTP ${res.status}`);
+  return res.json();
+}
+
+// POST /admin/geoip/batch  — body: { ips: ["1.2.3.4", ...] }
+// Returns: { "1.2.3.4": { country: "United Arab Emirates", countryCode: "AE", city: "Dubai" } }
+app.post("/admin/geoip/batch", requireAdmin, async (req, res) => {
+  try {
+    const raw = Array.isArray(req.body?.ips) ? req.body.ips : [];
+    const ips = [...new Set(raw.map(ip => String(ip || "").trim()).filter(ip => ip && !isPrivateIp(ip)))].slice(0, 200);
+
+    const result = {};
+
+    // Serve from cache where possible
+    const uncached = [];
+    for (const ip of ips) {
+      const hit = getCachedGeo(ip);
+      if (hit) result[ip] = { country: hit.country, countryCode: hit.countryCode, city: hit.city };
+      else uncached.push(ip);
+    }
+
+    // Batch-fetch uncached IPs in chunks of 100
+    for (let i = 0; i < uncached.length; i += 100) {
+      const chunk = uncached.slice(i, i + 100);
+      let rows;
+      try { rows = await fetchGeoIpBatch(chunk); } catch (e) {
+        console.error("[geoip] batch fetch error:", e.message);
+        for (const ip of chunk) result[ip] = { country: null, countryCode: null, city: null };
+        continue;
+      }
+      for (const row of rows) {
+        const ip = row.query;
+        const geo = row.status === "success"
+          ? { country: row.country || null, countryCode: row.countryCode || null, city: row.city || null }
+          : { country: null, countryCode: null, city: null };
+        geoCache.set(ip, { ...geo, cachedAt: Date.now() });
+        result[ip] = geo;
+      }
+    }
+
+    // Mark private/empty IPs that were filtered out
+    for (const ip of raw.map(ip => String(ip || "").trim()).filter(ip => ip)) {
+      if (!(ip in result)) result[ip] = { country: null, countryCode: null, city: null };
+    }
+
+    return res.json(result);
+  } catch (err) { return res.status(500).json({ error: "geoip_failed", details: err.message }); }
+});
+
+// GET /admin/geoip/:ip — single IP lookup
+app.get("/admin/geoip/:ip", requireAdmin, async (req, res) => {
+  try {
+    const ip = (req.params.ip || "").trim();
+    if (!ip) return res.status(400).json({ error: "missing_ip" });
+    if (isPrivateIp(ip)) return res.json({ ip, country: null, countryCode: null, city: null, note: "private" });
+
+    const hit = getCachedGeo(ip);
+    if (hit) return res.json({ ip, country: hit.country, countryCode: hit.countryCode, city: hit.city, cached: true });
+
+    const [row] = await fetchGeoIpBatch([ip]);
+    const geo = row?.status === "success"
+      ? { country: row.country || null, countryCode: row.countryCode || null, city: row.city || null }
+      : { country: null, countryCode: null, city: null };
+    geoCache.set(ip, { ...geo, cachedAt: Date.now() });
+    return res.json({ ip, ...geo });
+  } catch (err) { return res.status(500).json({ error: "geoip_failed", details: err.message }); }
+});
+
 // ─── START ───────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
