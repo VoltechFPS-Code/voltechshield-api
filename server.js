@@ -732,6 +732,58 @@ app.post("/admin/licenses/create-paid", requireAdmin, async (req, res) => {
   } catch (err) { return res.status(500).json({ error: "create_paid_license_failed" }); }
 });
 
+// DELETE /admin/licenses/:key
+app.delete("/admin/licenses/:key", requireAdmin, async (req, res) => {
+  try {
+    const key = req.params.key;
+    if (!key) return res.status(400).json({ success: false, error: "missing_license_key" });
+
+    // Look up license
+    const { data: license, error: findErr } = await supabase
+      .from("licenses")
+      .select("id, license_key, email")
+      .eq("license_key", key)
+      .single();
+
+    if (findErr || !license) {
+      return res.status(404).json({ success: false, error: "License not found" });
+    }
+
+    // Count related rows (for response)
+    const { count: actCount } = await supabase
+      .from("activations")
+      .select("*", { count: "exact", head: true })
+      .eq("license_key", key);
+
+    // Unlink any subscriptions pointing at this license
+    await supabase
+      .from("subscriptions")
+      .update({ linked_license_id: null, updated_at: new Date().toISOString() })
+      .eq("linked_license_id", license.id);
+
+    // Delete activations
+    await supabase.from("activations").delete().eq("license_key", key);
+
+    // Delete the license itself
+    const { error: delErr } = await supabase
+      .from("licenses")
+      .delete()
+      .eq("license_key", key);
+
+    if (delErr) {
+      return res.status(500).json({ success: false, error: delErr.message });
+    }
+
+    return res.json({
+      success: true,
+      license_key: key,
+      deleted: { activations: actCount || 0 },
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, error: e.message || "internal_error" });
+  }
+});
+
 // ─── SUBSCRIPTIONS ───────────────────────────────────────────────────────────
 app.post("/admin/subscriptions/create", requireAdmin, async (req, res) => {
   try {
