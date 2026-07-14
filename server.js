@@ -342,7 +342,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "5.5.2", notes: "HWID Laptop Bug Fixed", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v5.5.4/VoltechShield_5.5.4_x64_en-US.msi" }));
+app.get("/version", (_req, res) => res.json({ version: "5.5.4", notes: "HWID Laptop Bug Fixed", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v5.5.4/VoltechShield_5.5.4_x64_en-US.msi" }));
 
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
