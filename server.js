@@ -342,7 +342,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "5.5.4", notes: "HWID Laptop Bug Fixed", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v5.5.4/VoltechShield_5.5.4_x64_en-US.msi" }));
+app.get("/version", (_req, res) => res.json({ version: "5.5.5", notes: "License persistence fix — no more re-entering your key every startup", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v5.5.5/VoltechShield_5.5.5_x64_en-US.msi" }));
 
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
@@ -732,55 +732,55 @@ app.post("/admin/licenses/create-paid", requireAdmin, async (req, res) => {
   } catch (err) { return res.status(500).json({ error: "create_paid_license_failed" }); }
 });
 
-// DELETE /admin/licenses/:key
 app.delete("/admin/licenses/:key", requireAdmin, async (req, res) => {
   try {
-    const key = req.params.key;
-    if (!key) return res.status(400).json({ success: false, error: "missing_license_key" });
+    const licenseKey = (req.params.key || "").trim();
+    if (!licenseKey) return res.status(400).json({ success: false, error: "missing_license_key" });
 
-    // Look up license
-    const { data: license, error: findErr } = await supabase
-      .from("licenses")
-      .select("id, license_key, email")
-      .eq("license_key", key)
-      .single();
+    const { data: licenseRow, error: fetchError } = await supabase
+      .from("licenses").select("id, license_key").eq("license_key", licenseKey).single();
+    if (fetchError || !licenseRow) return res.status(404).json({ success: false, error: "license_not_found" });
 
-    if (findErr || !license) {
-      return res.status(404).json({ success: false, error: "License not found" });
+    const licenseId = licenseRow.id;
+    const nowIso = new Date().toISOString();
+
+    // Cancel linked subscriptions in Supabase + best-effort Mamo API cancel
+    const { data: linkedSubs } = await supabase
+      .from("payment_subscriptions").select("id, provider_subscription_id, status").eq("linked_license_id", licenseId);
+    let cancelledSubs = 0;
+    for (const sub of linkedSubs || []) {
+      if (!["cancelled", "canceled"].includes(String(sub.status || ""))) {
+        await supabase.from("payment_subscriptions").update({ status: "cancelled", cancelled_at: nowIso, updated_at: nowIso }).eq("id", sub.id);
+        cancelledSubs++;
+        if (sub.provider_subscription_id && process.env.MAMO_API_KEY) {
+          try {
+            await fetch(`${MAMO_BASE}/subscriptions/${sub.provider_subscription_id}/cancel`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${process.env.MAMO_API_KEY}`, "Content-Type": "application/json" }
+            });
+          } catch (mamoErr) {
+            console.error(`[delete-license] Mamo cancel failed for sub ${sub.provider_subscription_id}:`, mamoErr.message);
+          }
+        }
+      }
     }
 
-    // Count related rows (for response)
-    const { count: actCount } = await supabase
-      .from("activations")
-      .select("*", { count: "exact", head: true })
-      .eq("license_key", key);
+    const { count: activationCount } = await supabase
+      .from("activations").select("*", { count: "exact", head: true }).eq("license_key", licenseKey);
+    await supabase.from("activations").delete().eq("license_key", licenseKey);
 
-    // Unlink any subscriptions pointing at this license
-    await supabase
-      .from("subscriptions")
-      .update({ linked_license_id: null, updated_at: new Date().toISOString() })
-      .eq("linked_license_id", license.id);
+    const { count: paymentCount } = await supabase
+      .from("payment_orders").select("*", { count: "exact", head: true }).eq("linked_license_id", licenseId);
+    await supabase.from("payment_orders").delete().eq("linked_license_id", licenseId);
 
-    // Delete activations
-    await supabase.from("activations").delete().eq("license_key", key);
+    const { error: deleteError } = await supabase.from("licenses").delete().eq("license_key", licenseKey);
+    if (deleteError) throw deleteError;
 
-    // Delete the license itself
-    const { error: delErr } = await supabase
-      .from("licenses")
-      .delete()
-      .eq("license_key", key);
-
-    if (delErr) {
-      return res.status(500).json({ success: false, error: delErr.message });
-    }
-
-    return res.json({
-      success: true,
-      license_key: key,
-      deleted: { activations: actCount || 0 },
-    });
-  } catch (e) {
-    return res.status(500).json({ success: false, error: e.message || "internal_error" });
+    console.log(`[admin] Deleted license ${licenseKey} — ${activationCount || 0} activations, ${paymentCount || 0} payment orders, ${cancelledSubs} subs cancelled`);
+    return res.json({ success: true, license_key: licenseKey, deleted: { activations: activationCount || 0, payments: paymentCount || 0, subscriptions_cancelled: cancelledSubs } });
+  } catch (err) {
+    console.error("Delete license error:", err);
+    return res.status(500).json({ success: false, error: "delete_license_failed" });
   }
 });
 
@@ -973,11 +973,12 @@ function getCachedGeo(ip) {
 }
 
 async function fetchGeoIpBatch(ips) {
-  // ipinfo.io batch: POST { "ip1": null, "ip2": null, ... } → { "ip1": { country, city, ... } }
+  // ipinfo.io batch: POST ["ip1", "ip2", ...] (a plain array — NOT an object
+  // keyed by IP, that silently fails) → { "ip1": { country, city, ... } }
   // Free: 1k/day no token, 50k/month with IPINFO_TOKEN env var
   const token = process.env.IPINFO_TOKEN;
   const url = token ? `https://ipinfo.io/batch?token=${token}` : "https://ipinfo.io/batch";
-  const body = Object.fromEntries(ips.map(ip => [ip, null]));
+  const body = ips;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Accept": "application/json" },
