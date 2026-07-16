@@ -7,7 +7,11 @@ const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
-app.set('trust proxy', 1);
+// Render traffic passes through Cloudflare's edge AND Render's own load
+// balancer — two hops, not one. Trusting only 1 hop resolved req.ip to
+// Cloudflare's edge server (wrong country), not the real client. `true`
+// trusts the full forwarded chain and takes the left-most (origin) address.
+app.set('trust proxy', true);
 
 app.use(cors());
 app.use(express.json());
@@ -36,6 +40,14 @@ function requireAdmin(req, res, next) {
 }
 
 function getClientIp(req) {
+  // Render's *.onrender.com edge sits behind Cloudflare for every service,
+  // even with no custom domain. X-Forwarded-For isn't reliable here — an
+  // intermediate hop (Render's own LB) can end up as the "left-most" trusted
+  // address. CF-Connecting-IP is Cloudflare's dedicated single-IP header for
+  // exactly this, per their own docs. Fall back to XFF/req.ip for local/dev
+  // requests that never pass through Cloudflare at all.
+  const cfIp = req.headers["cf-connecting-ip"];
+  if (typeof cfIp === "string" && cfIp.trim()) return cfIp.trim();
   return req.ip || (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || null;
 }
 
