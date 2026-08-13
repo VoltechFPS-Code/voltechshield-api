@@ -354,7 +354,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "5.6.0", notes: "FPS Boost Registries Updated and Improved", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v5.6.0/VoltechShield_5.6.0_x64_en-US.msi" }));
+app.get("/version", (_req, res) => res.json({ version: "6.0.0", notes: "", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v6.0.0/VoltechShield_6.0.0_x64_en-US.msi" }));
 
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
@@ -582,27 +582,232 @@ app.post("/report-gpu", async (req, res) => {
 // ─── REPORT PERFORMANCE (Health Score) ───────────────────────────────────────
 app.post("/report-performance", async (req, res) => {
   try {
-    const { license, hwid, health_score, score_breakdown } = req.body;
+    const {
+      license, hwid, health_score, score_breakdown, sessions,
+      // Progression (client 5.6.1+). Every field is optional — older clients
+      // omit them and must still be accepted.
+      xp_total, level, rank_en, rank_ar,
+      achievements_unlocked, achievements_total, achievement_keys, app_version,
+    } = req.body;
     if (!license || !hwid) return res.status(400).json({ ok: false, reason: "missing_fields" });
     const { data: licenseRow, error } = await supabase.from("licenses").select("id, hwid").eq("license_key", license).single();
     if (error || !licenseRow) return res.status(404).json({ ok: false, reason: "license_not_found" });
     if (licenseRow.hwid && licenseRow.hwid !== hwid) return res.status(403).json({ ok: false, reason: "hwid_mismatch" });
-    await supabase.from("licenses").update({
+
+    const patch = {
       latest_health_score: typeof health_score === "number" ? Math.round(Math.min(100, Math.max(0, health_score))) : null,
       latest_health_breakdown: typeof score_breakdown === "string" ? score_breakdown.slice(0, 2000) : null,
       last_health_reported_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
-    }).eq("license_key", license);
-    return res.json({ ok: true });
+    };
+
+    // Recent gaming sessions (client 5.6.1+). Older clients omit the field
+    // entirely — those reports must still be accepted, and must NOT wipe
+    // sessions already stored, so this is only written when actually sent.
+    if (SESSION_COLUMNS_AVAILABLE && Array.isArray(sessions)) {
+      // Client sends 20; never trust it for how much it may write.
+      patch.latest_sessions = sessions.slice(0, 50).map((s) => ({
+        game:               String(s?.game ?? "").slice(0, 64),
+        ended_ms:           Number(s?.ended_ms) || 0,
+        duration_sec:       Number(s?.duration_sec) || 0,
+        fps_avg:            typeof s?.fps_avg === "number" ? s.fps_avg : null,
+        fps_p1:             typeof s?.fps_p1 === "number" ? s.fps_p1 : null,
+        fps_max:            typeof s?.fps_max === "number" ? s.fps_max : null,
+        fps_samples:        Number(s?.fps_samples) || 0,
+        fps_missing:        s?.fps_missing ? String(s.fps_missing).slice(0, 64) : null,
+        cpu_max:            typeof s?.cpu_max === "number" ? s.cpu_max : null,
+        gpu_max:            typeof s?.gpu_max === "number" ? s.gpu_max : null,
+        gpu_usage_avg:      typeof s?.gpu_usage_avg === "number" ? s.gpu_usage_avg : null,
+        resolution:         s?.resolution ? String(s.resolution).slice(0, 32) : null,
+        display_mode:       s?.display_mode ? String(s.display_mode).slice(0, 16) : null,
+        ping_avg_ms:        typeof s?.ping_avg_ms === "number" ? s.ping_avg_ms : null,
+        jitter_ms:          typeof s?.jitter_ms === "number" ? s.jitter_ms : null,
+        loss_pct:           typeof s?.loss_pct === "number" ? s.loss_pct : null,
+        clips:              Number(s?.clips) || 0,
+        warmup_trimmed_sec: Number(s?.warmup_trimmed_sec) || 0,
+        app_version:        String(s?.app_version ?? "").slice(0, 16),
+      }));
+      patch.last_sessions_reported_at = new Date().toISOString();
+    }
+
+    // Progression (client 5.6.1+). Same rule as sessions: only written when
+    // actually sent, so an older client cannot blank out stored progress.
+    if (PROGRESSION_COLUMNS_AVAILABLE && typeof xp_total === "number" && Number.isFinite(xp_total)) {
+      // XP must never move backwards. A reinstall starts local counters at
+      // zero, and overwriting a real total with 0 would erase someone's
+      // progress — so keep whichever is higher, matching the max(local,
+      // remote) rule the client reconciles with.
+      const { data: prev } = await supabase
+        .from("licenses")
+        .select("xp_total, achievements_unlocked")
+        .eq("license_key", license)
+        .single();
+
+      const incomingXp = Math.max(0, Math.min(10000000, Math.round(xp_total)));
+      const incomingUnlocked = Number(achievements_unlocked) || 0;
+
+      patch.xp_total = Math.max(incomingXp, Number(prev?.xp_total) || 0);
+      patch.achievements_unlocked = Math.max(
+        incomingUnlocked,
+        Number(prev?.achievements_unlocked) || 0
+      );
+      patch.level = typeof level === "number" ? Math.max(1, Math.min(12, Math.round(level))) : null;
+      patch.rank_en = typeof rank_en === "string" ? rank_en.slice(0, 40) : null;
+      patch.rank_ar = typeof rank_ar === "string" ? rank_ar.slice(0, 40) : null;
+      patch.achievements_total = Number(achievements_total) || 0;
+      patch.achievement_keys = Array.isArray(achievement_keys)
+        ? achievement_keys.filter((k) => typeof k === "string").slice(0, 200)
+        : [];
+      patch.client_app_version = typeof app_version === "string" ? app_version.slice(0, 16) : null;
+      patch.last_progression_reported_at = new Date().toISOString();
+    }
+
+    await supabase.from("licenses").update(patch).eq("license_key", license);
+    return res.json({
+      ok: true,
+      sessions_stored: patch.latest_sessions ? patch.latest_sessions.length : 0,
+      xp_total: patch.xp_total ?? null,
+    });
   } catch (err) { console.error("Report performance error:", err); return res.status(500).json({ ok: false, reason: "server_error" }); }
 });
 
+// ─── PROFILE SYNC (client 5.6.1+) ────────────────────────────────────────────
+//
+// Push-and-pull in one call. The client sends what it has; the server merges
+// and returns the authoritative result, which the client then adopts. That
+// keeps a reinstall from losing progress and avoids a second round trip.
+//
+// Merge rules, deliberately one-directional:
+//   * achievement keys — union. A trophy is never taken back.
+//   * counters         — MAX per field. A fresh install reports 0 and must not
+//                        lower a stored 97.
+//   * lastCleanDay     — the later date, so a streak is not reset by a device
+//                        that has not cleaned recently.
+//   * settings         — last write wins, by the client's own timestamp.
+app.post("/profile/sync", async (req, res) => {
+  try {
+    const { license, hwid, achievement_keys, counters, settings, settings_updated_at } = req.body || {};
+    if (!license || !hwid) return res.status(400).json({ ok: false, reason: "missing_fields" });
+
+    if (!PROGRESSION_COLUMNS_AVAILABLE) {
+      // Migration has not run — accept the call so the client does not error,
+      // but tell it nothing is stored so it stays on local state.
+      return res.json({ ok: true, stored: false, reason: "migration_pending" });
+    }
+
+    const { data: row, error } = await supabase
+      .from("licenses")
+      .select("id, hwid, achievement_keys, achievement_counters, settings_blob, settings_updated_at, xp_total")
+      .eq("license_key", license)
+      .single();
+    if (error || !row) return res.status(404).json({ ok: false, reason: "license_not_found" });
+    if (row.hwid && row.hwid !== hwid) return res.status(403).json({ ok: false, reason: "hwid_mismatch" });
+
+    // Achievements: union of both sides.
+    const incomingKeys = Array.isArray(achievement_keys)
+      ? achievement_keys.filter((k) => typeof k === "string").slice(0, 200)
+      : [];
+    const storedKeys = Array.isArray(row.achievement_keys) ? row.achievement_keys : [];
+    const mergedKeys = Array.from(new Set([...storedKeys, ...incomingKeys]));
+
+    // Counters: MAX per numeric field, latest date for the streak marker.
+    const storedCounters = (row.achievement_counters && typeof row.achievement_counters === "object")
+      ? row.achievement_counters : {};
+    const incomingCounters = (counters && typeof counters === "object") ? counters : {};
+    const mergedCounters = {};
+    for (const field of ["clipsSaved", "cleanRuns", "cleanStreak", "sessions", "optimizeRuns"]) {
+      const a = Number(storedCounters[field]) || 0;
+      const b = Number(incomingCounters[field]) || 0;
+      mergedCounters[field] = Math.max(a, b);
+    }
+    const dayA = typeof storedCounters.lastCleanDay === "string" ? storedCounters.lastCleanDay : "";
+    const dayB = typeof incomingCounters.lastCleanDay === "string" ? incomingCounters.lastCleanDay : "";
+    mergedCounters.lastCleanDay = dayA > dayB ? dayA : dayB; // ISO dates sort lexically
+
+    // Settings: last write wins.
+    const incomingStamp = Date.parse(settings_updated_at || "") || 0;
+    const storedStamp = Date.parse(row.settings_updated_at || "") || 0;
+    const takeIncoming = settings && typeof settings === "object" && incomingStamp >= storedStamp;
+    const mergedSettings = takeIncoming ? settings : (row.settings_blob || null);
+    const mergedSettingsStamp = takeIncoming
+      ? new Date(incomingStamp || Date.now()).toISOString()
+      : (row.settings_updated_at || null);
+
+    await supabase.from("licenses").update({
+      achievement_keys: mergedKeys,
+      achievement_counters: mergedCounters,
+      achievements_unlocked: mergedKeys.length,
+      settings_blob: mergedSettings,
+      settings_updated_at: mergedSettingsStamp,
+      profile_synced_at: new Date().toISOString(),
+    }).eq("license_key", license);
+
+    return res.json({
+      ok: true,
+      stored: true,
+      achievement_keys: mergedKeys,
+      counters: mergedCounters,
+      settings: mergedSettings,
+      settings_updated_at: mergedSettingsStamp,
+    });
+  } catch (err) {
+    console.error("Profile sync error:", err);
+    return res.status(500).json({ ok: false, reason: "server_error" });
+  }
+});
+
 // ─── ADMIN: HEALTH REPORTS ───────────────────────────────────────────────────
+
+// The technician Device Health tab reads /admin/licenses/search, which uses
+// select("*") — so progression columns reach the portal automatically once the
+// migration runs and this route needs no column changes.
+//
+// What DOES need guarding is the write path below: an update() naming columns
+// that do not exist fails as a whole, and since that call's error is not
+// checked, the health score would silently stop saving too. So the columns are
+// probed once at boot and progression writes are skipped until they exist.
+let PROGRESSION_COLUMNS_AVAILABLE = true;
+
+(async () => {
+  const { error } = await supabase
+    .from("licenses")
+    .select("xp_total, achievement_keys, last_progression_reported_at")
+    .limit(1);
+  if (error) {
+    PROGRESSION_COLUMNS_AVAILABLE = false;
+    console.warn(
+      "[progression] columns missing — run migrations/2026-08-13-progression-columns.sql, then restart. Health reporting continues normally; XP is not stored until then."
+    );
+  }
+})();
+
+// Same guard for the session columns, for the same reason: writing
+// latest_sessions before the migration runs would fail the whole update() and
+// silently take the health score down with it.
+let SESSION_COLUMNS_AVAILABLE = true;
+
+(async () => {
+  const { error } = await supabase
+    .from("licenses")
+    .select("latest_sessions, last_sessions_reported_at")
+    .limit(1);
+  if (error) {
+    SESSION_COLUMNS_AVAILABLE = false;
+    console.warn(
+      "[sessions] columns missing — run migrations/2026-08-13-session-columns.sql, then restart. Health reporting continues normally; session history is not stored until then."
+    );
+  }
+})();
+
 app.get("/admin/health-reports", requireAdmin, async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from("licenses")
-      .select("license_key, email, discord, status, gpu_name, cpu_brand, latest_health_score, latest_health_breakdown, last_health_reported_at, hwid, updated_at")
+      // latest_sessions is deliberately NOT selected here. It is 4-6 KB per row
+      // and this is a list endpoint; session history is served per-license by
+      // /admin/licenses/:key/sessions instead. last_sessions_reported_at is
+      // cheap and useful as a "has session data" hint, so it stays.
+      .select("license_key, email, discord, status, gpu_name, cpu_brand, latest_health_score, latest_health_breakdown, last_health_reported_at, last_sessions_reported_at, hwid, updated_at")
       .not("latest_health_score", "is", null)
       .order("last_health_reported_at", { ascending: false });
     if (error) throw error;
@@ -638,8 +843,37 @@ app.get("/admin/licenses/search", requireAdmin, async (req, res) => {
     if (!q) return res.json([]);
     const { data, error } = await supabase.from("licenses").select("*").or(`license_key.ilike.%${q}%,hwid.ilike.%${q}%,email.ilike.%${q}%,discord.ilike.%${q}%`).order("created_at", { ascending: false }).limit(200);
     if (error) throw error;
-    return res.json(data);
+    // latest_sessions is 4-6 KB per row and EVERY admin screen hits this
+    // endpoint (device-health, gpu-fleet, driver-status, search, licenses,
+    // statistics, overview, subscriptions' fan-out). Shipping it here would
+    // add hundreds of KB to every page load for data only one expanded row
+    // ever displays. Stripped in JS rather than by switching to an explicit
+    // column list, so no other column can be accidentally dropped.
+    // Device Health fetches it on demand via /admin/licenses/:key/sessions.
+    const rows = (data || []).map(({ latest_sessions, ...rest }) => rest);
+    return res.json(rows);
   } catch (err) { return res.status(500).json({ error: "search_failed" }); }
+});
+
+// Per-license session history. Deliberately its own endpoint: the payload is
+// 4-6 KB and is only ever rendered inside a single expanded row, so it is
+// fetched on demand rather than shipped with every license list.
+app.get("/admin/licenses/:key/sessions", requireAdmin, async (req, res) => {
+  try {
+    const key = (req.params.key || "").toString().trim();
+    if (!key) return res.status(400).json({ error: "missing_license_key" });
+    const { data, error } = await supabase
+      .from("licenses")
+      .select("license_key, latest_sessions, last_sessions_reported_at")
+      .eq("license_key", key)
+      .single();
+    if (error || !data) return res.status(404).json({ error: "license_not_found" });
+    return res.json({
+      license_key: data.license_key,
+      sessions: Array.isArray(data.latest_sessions) ? data.latest_sessions : [],
+      last_sessions_reported_at: data.last_sessions_reported_at || null,
+    });
+  } catch (err) { return res.status(500).json({ error: "sessions_fetch_failed" }); }
 });
 
 app.post("/admin/licenses/reset-hwid", requireAdmin, async (req, res) => {
