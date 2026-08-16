@@ -356,6 +356,56 @@ app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", s
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
 app.get("/version", (_req, res) => res.json({ version: "6.0.1", notes: "", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v6.0.1/VoltechShield_6.0.1_x64_en-US.msi" }));
 
+// ─── LEADERBOARD (public) ────────────────────────────────────────────────────
+// No auth — same trust level as /version. Only ever returns what's safe to
+// broadcast (discord name + progression stats); license_key/hwid/email/gpu/cpu
+// never leave this route. Licenses with no discord name on file are excluded
+// entirely rather than shown anonymized.
+app.get("/leaderboard", async (req, res) => {
+  try {
+    if (!PROGRESSION_COLUMNS_AVAILABLE) return res.json({ available: false, entries: [], your_rank: null });
+
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const { data, error } = await supabase
+      .from("licenses")
+      .select("discord, xp_total, level, rank_en, rank_ar, achievements_unlocked")
+      .not("discord", "is", null)
+      .not("xp_total", "is", null)
+      .order("xp_total", { ascending: false })
+      .limit(limit);
+    if (error) return res.status(500).json({ available: false, entries: [], your_rank: null });
+
+    const entries = data.map((row, i) => ({
+      rank: i + 1,
+      discord: row.discord,
+      xp_total: row.xp_total,
+      level: row.level,
+      rank_en: row.rank_en,
+      rank_ar: row.rank_ar,
+      achievements_unlocked: row.achievements_unlocked,
+    }));
+
+    // your_rank is resolved from a client-supplied xp value, not a license/hwid
+    // lookup — the app already knows its own xpTotal locally, so this keeps
+    // the endpoint fully public with zero identity exchange.
+    let your_rank = null;
+    const myXp = parseInt(req.query.xp, 10);
+    if (Number.isFinite(myXp) && myXp >= 0) {
+      const { count } = await supabase
+        .from("licenses")
+        .select("id", { count: "exact", head: true })
+        .not("discord", "is", null)
+        .gt("xp_total", myXp);
+      your_rank = (count ?? 0) + 1;
+    }
+
+    return res.json({ available: true, entries, your_rank });
+  } catch (err) {
+    console.error("Leaderboard error:", err);
+    return res.status(500).json({ available: false, entries: [], your_rank: null });
+  }
+});
+
 // ─── DRIVER BLOCKLIST ────────────────────────────────────────────────────────
 const DRIVER_BLOCKLIST_KEY = "driver_blocklist";
 const DRIVER_BLOCKLIST_FALLBACK = { entries: [] };
