@@ -354,7 +354,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "6.0.8", notes: "", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v6.0.8/VoltechShield_6.0.8_x64_en-US.msi" }));
+app.get("/version", (_req, res) => res.json({ version: "6.0.8", notes: "New Achievements", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v6.0.8/VoltechShield_6.0.8_x64_en-US.msi" }));
 
 // ─── LEADERBOARD (public) ────────────────────────────────────────────────────
 // No auth — same trust level as /version. Only ever returns what's safe to
@@ -760,19 +760,50 @@ app.post("/profile/sync", async (req, res) => {
     const storedKeys = Array.isArray(row.achievement_keys) ? row.achievement_keys : [];
     const mergedKeys = Array.from(new Set([...storedKeys, ...incomingKeys]));
 
-    // Counters: MAX per numeric field, latest date for the streak marker.
+    // Counters: MAX per numeric field, matching AchievementCounters in
+    // client/src/achievements.ts field-for-field so every achievement (not
+    // just the original 5-counter subset) survives a reinstall / new PC.
     const storedCounters = (row.achievement_counters && typeof row.achievement_counters === "object")
       ? row.achievement_counters : {};
     const incomingCounters = (counters && typeof counters === "object") ? counters : {};
     const mergedCounters = {};
-    for (const field of ["clipsSaved", "cleanRuns", "cleanStreak", "sessions", "optimizeRuns"]) {
+    const NUMERIC_COUNTER_FIELDS = [
+      "clipsSaved",
+      "cleanRuns", "cleanStreak",
+      "boostRuns", "netRuns", "nvidiaRuns", "profileRuns", "optimizeRuns",
+      "sessions", "sessionSecondsTotal", "longestSessionSec", "coolSessions",
+      "recordingRuns", "recordingSecondsTotal",
+      "benchRuns", "bestHealth",
+    ];
+    for (const field of NUMERIC_COUNTER_FIELDS) {
       const a = Number(storedCounters[field]) || 0;
       const b = Number(incomingCounters[field]) || 0;
       mergedCounters[field] = Math.max(a, b);
     }
-    const dayA = typeof storedCounters.lastCleanDay === "string" ? storedCounters.lastCleanDay : "";
-    const dayB = typeof incomingCounters.lastCleanDay === "string" ? incomingCounters.lastCleanDay : "";
-    mergedCounters.lastCleanDay = dayA > dayB ? dayA : dayB; // ISO dates sort lexically
+
+    // lastCleanDay: the LATER date wins — a device that has not cleaned
+    // recently must not reset a streak another device is still building.
+    const cleanDayA = typeof storedCounters.lastCleanDay === "string" ? storedCounters.lastCleanDay : "";
+    const cleanDayB = typeof incomingCounters.lastCleanDay === "string" ? incomingCounters.lastCleanDay : "";
+    mergedCounters.lastCleanDay = cleanDayA > cleanDayB ? cleanDayA : cleanDayB; // ISO dates sort lexically
+
+    // activationDay: the EARLIER date wins — it marks when the licence was
+    // first seen active, so a reinstall (which starts a fresh, later
+    // activationDay locally) must not shrink daysSinceActivation.
+    const actDayA = typeof storedCounters.activationDay === "string" ? storedCounters.activationDay : "";
+    const actDayB = typeof incomingCounters.activationDay === "string" ? incomingCounters.activationDay : "";
+    mergedCounters.activationDay = actDayA && actDayB ? (actDayA < actDayB ? actDayA : actDayB) : (actDayA || actDayB);
+
+    // Distinct-value lists: union of both sides, same rule as achievement
+    // keys above — a device/game/day already credited is never dropped.
+    const unionStrings = (a, b, cap) => {
+      const arrA = Array.isArray(a) ? a.filter((x) => typeof x === "string") : [];
+      const arrB = Array.isArray(b) ? b.filter((x) => typeof x === "string") : [];
+      return Array.from(new Set([...arrA, ...arrB])).slice(0, cap);
+    };
+    mergedCounters.clipGameIds = unionStrings(storedCounters.clipGameIds, incomingCounters.clipGameIds, 200);
+    mergedCounters.profileGameIds = unionStrings(storedCounters.profileGameIds, incomingCounters.profileGameIds, 200);
+    mergedCounters.activeDayList = unionStrings(storedCounters.activeDayList, incomingCounters.activeDayList, 3660);
 
     // Settings: last write wins.
     const incomingStamp = Date.parse(settings_updated_at || "") || 0;
