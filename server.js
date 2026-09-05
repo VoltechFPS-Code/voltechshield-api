@@ -354,7 +354,7 @@ app.get("/debug-mamo-payments/:subscriptionId", requireAdmin, async (req, res) =
 });
 app.get("/", (_req, res) => res.json({ ok: true, service: "voltechshield-api", status: "online" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "voltechshield-api", uptime: process.uptime(), timestamp: new Date().toISOString() }));
-app.get("/version", (_req, res) => res.json({ version: "6.0.7", notes: "", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v6.0.7/VoltechShield_6.0.7_x64_en-US.msi" }));
+app.get("/version", (_req, res) => res.json({ version: "6.0.8", notes: "", url: "https://github.com/VoltechFPS-Code/voltechshield-api/releases/download/v6.0.8/VoltechShield_6.0.8_x64_en-US.msi" }));
 
 // ─── LEADERBOARD (public) ────────────────────────────────────────────────────
 // No auth — same trust level as /version. Only ever returns what's safe to
